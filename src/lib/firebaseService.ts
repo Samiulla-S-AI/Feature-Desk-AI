@@ -218,5 +218,59 @@ export const firestoreService = {
             console.error('❌ Error fetching student feedback:', error);
             return [];
         }
+    },
+
+    /**
+     * Save a school note to Firestore
+     */
+    async saveSchoolNote(noteData: any): Promise<string> {
+        try {
+            const docRef = await addDoc(collection(db, 'school_notes'), {
+                ...noteData,
+                uploadedAt: new Date()
+            });
+            console.log('✅ School note saved to Firestore:', docRef.id);
+            return docRef.id;
+        } catch (error) {
+            console.error('❌ Error saving school note:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get school notes for a class
+     */
+    async getSchoolNotesByClass(classId: number): Promise<any[]> {
+        try {
+            const q = query(
+                collection(db, 'school_notes'),
+                where('classId', '==', Number(classId))
+            );
+            const snapshot = await getDocs(q);
+            return snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                uploadedAt: doc.data().uploadedAt?.toDate() || new Date()
+            })).sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime());
+        } catch (error) {
+            console.error('❌ Error fetching school notes:', error);
+            return [];
+        }
+    },
+
+    /**
+     * Delete a school note from Firestore
+     */
+    async deleteSchoolNote(noteId: string): Promise<void> {
+        try {
+            const { doc, deleteDoc } = await import('firebase/firestore');
+            const noteRef = doc(db, 'school_notes', noteId);
+            await deleteDoc(noteRef);
+            console.log('✅ School note deleted from Firestore:', noteId);
+        } catch (error) {
+            console.error('❌ Error deleting school note:', error);
+            throw error;
+        }
     }
 };
+

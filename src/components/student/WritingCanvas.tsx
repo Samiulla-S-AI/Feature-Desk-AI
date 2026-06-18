@@ -2917,10 +2917,10 @@ export default function WritingCanvas() {
                 <button
                   key={c}
                   onClick={() => handleClassChange(c)}
-                  className={`px - 3 py - 3 text - sm font - medium rounded - lg transition - colors border ${currentClass === c
+                  className={`px-3 py-3 text-sm font-medium rounded-lg transition-colors border ${currentClass === c
                     ? 'bg-blue-500 text-white border-blue-600'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
-                    } `}
+                    }`}
                 >
                   {c}
                 </button>
@@ -2946,15 +2946,15 @@ export default function WritingCanvas() {
                 <button
                   key={subj.code}
                   onClick={() => handleSubjectChange(subj.code)}
-                  className={`px - 3 py - 3 text - sm font - medium rounded - lg transition - colors text - left flex items - center space - x - 2 border ${currentSubject.code === subj.code
+                  className={`px-3 py-3 text-sm font-medium rounded-lg transition-colors text-left flex items-center space-x-2 border ${currentSubject.code === subj.code
                     ? 'text-white border-transparent'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
-                    } `}
+                    }`}
                   style={{
                     backgroundColor: currentSubject.code === subj.code ? subj.color : undefined
                   }}
                 >
-                  <div className={`w - 3 h - 3 rounded - full ${currentSubject.code === subj.code ? 'bg-white' : ''} `} style={{ backgroundColor: currentSubject.code !== subj.code ? subj.color : undefined }}></div>
+                  <div className={`w-3 h-3 rounded-full ${currentSubject.code === subj.code ? 'bg-white' : ''}`} style={{ backgroundColor: currentSubject.code !== subj.code ? subj.color : undefined }}></div>
                   <span>{subj.name}</span>
                 </button>
               ))}

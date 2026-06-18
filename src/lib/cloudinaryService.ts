@@ -12,9 +12,9 @@ export const cloudinaryService = {
     _getResourceType(file: File | Blob): 'image' | 'raw' | 'video' | 'auto' {
         const mimeType = file.type?.toLowerCase() || '';
 
-        // Images → 'image' (or use 'auto' which also works for images)
+        // Images → 'image'
         if (mimeType.startsWith('image/')) {
-            return 'auto'; // 'auto' works perfectly for images and is more flexible
+            return 'image';
         }
 
         // Videos → 'video'
@@ -87,8 +87,7 @@ export const cloudinaryService = {
     },
 
     /**
-     * Uploads a PDF file specifically to Cloudinary.
-     * Uses 'raw' resource_type which is required for PDFs.
+     * Uses 'raw' resource_type which is standard for non-media files.
      *
      * @param file The PDF file to upload.
      * @param folder Optional folder path.

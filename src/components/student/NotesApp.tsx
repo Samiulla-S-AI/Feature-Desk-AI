@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Trash2, Edit3, Plus, FileText, Search, BookOpen, Calendar, Tag, Clock, ExternalLink, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Trash2, Edit3, Plus, FileText, Search, BookOpen, Calendar, Tag, Clock, ExternalLink, RefreshCw, Eye, Image as ImageIcon } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { fetchCanvasNotesHybrid } from '../../lib/db';
+import { firestoreService } from '../../lib/firebaseService';
+import PDFViewer from '../common/PDFViewer';
+import { renderMarkdown } from '../../utils/markdown';
 
 interface ClassNote {
   id: string;
@@ -30,6 +33,12 @@ export default function NotesApp() {
   const [previewPage, setPreviewPage] = useState(1);
   const [isLoadingNotes, setIsLoadingNotes] = useState(false);
 
+  // School Notes state
+  const [activeTab, setActiveTab] = useState<'class' | 'school'>('class');
+  const [schoolNotes, setSchoolNotes] = useState<any[]>([]);
+  const [selectedSchoolNote, setSelectedSchoolNote] = useState<any | null>(null);
+  const [isLoadingSchoolNotes, setIsLoadingSchoolNotes] = useState(false);
+
   // When selected note changes, reset preview page
   useEffect(() => {
     if (selectedNote) {
@@ -37,12 +46,39 @@ export default function NotesApp() {
     }
   }, [selectedNote]);
 
+  // Fetch school notes from Firestore
+  const fetchSchoolNotes = async (isSilent = false) => {
+    if (!user) return;
+    if (!isSilent) setIsLoadingSchoolNotes(true);
+    try {
+      const classId = (user as any)?.current_class || 1;
+      const fetched = await firestoreService.getSchoolNotesByClass(classId);
+      setSchoolNotes(fetched);
+    } catch (err) {
+      console.error('Failed to load school notes:', err);
+    } finally {
+      if (!isSilent) setIsLoadingSchoolNotes(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSchoolNotes();
+
+    // Auto-refresh every 15 seconds silently
+    const interval = setInterval(() => {
+      fetchSchoolNotes(true);
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [user]);
+
   // Load saved notes from localStorage
   useEffect(() => {
     const savedNotes = localStorage.getItem(`class_notes_${(user as any)?.id || 'guest'}`);
     if (savedNotes) {
       setNotes(JSON.parse(savedNotes));
     } else {
+
       // Demo notes
       setNotes([]);
     }
@@ -109,9 +145,16 @@ export default function NotesApp() {
     'MUSIC': '#6366F1'
   };
 
-  const filteredNotes = notes.filter(note => {
+  const filteredClassNotes = notes.filter(note => {
     const matchesSearch = note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       note.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesSubject = filterSubject === 'all' || note.subject === filterSubject;
+    return matchesSearch && matchesSubject;
+  });
+
+  const filteredSchoolNotes = schoolNotes.filter(note => {
+    const matchesSearch = note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (note.tags && note.tags.some((tag: string) => tag.toLowerCase().includes(searchQuery.toLowerCase())));
     const matchesSubject = filterSubject === 'all' || note.subject === filterSubject;
     return matchesSearch && matchesSubject;
   });
@@ -138,7 +181,7 @@ export default function NotesApp() {
   };
 
   return (
-    <div className="bg-gradient-to-br from-slate-50 via-white to-blue-50 min-h-screen w-full flex">
+    <div className="bg-gradient-to-br from-slate-50 via-white to-blue-50 h-screen w-full flex overflow-hidden">
       {/* Sidebar - Notes List */}
       <div className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-sm">
         {/* Header */}
@@ -152,14 +195,25 @@ export default function NotesApp() {
             </button>
             <h1 className="text-lg font-bold text-white flex items-center">
               <BookOpen className="w-5 h-5 mr-2" />
-              Class Notes
+              Notes Hub
             </h1>
-            <button
-              onClick={handleCreateNewNote}
-              className="p-2 rounded-full bg-white text-green-600 hover:bg-green-50"
-            >
-              <Plus className="w-5 h-5" />
-            </button>
+            {activeTab === 'class' ? (
+              <button
+                onClick={handleCreateNewNote}
+                className="p-2 rounded-full bg-white text-green-600 hover:bg-green-50"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+            ) : (
+              <button
+                onClick={() => fetchSchoolNotes(false)}
+                disabled={isLoadingSchoolNotes}
+                className="p-2 rounded-full bg-white/20 hover:bg-white/30 text-white transition-all disabled:opacity-50 flex items-center justify-center"
+                title="Refresh school notes"
+              >
+                <RefreshCw className={`w-5 h-5 ${isLoadingSchoolNotes ? 'animate-spin' : ''}`} />
+              </button>
+            )}
           </div>
 
           {/* Search */}
@@ -173,6 +227,38 @@ export default function NotesApp() {
               className="w-full pl-10 pr-3 py-2 rounded-lg bg-white/90 border-0 focus:ring-2 focus:ring-white text-gray-800 placeholder-gray-500"
             />
           </div>
+        </div>
+
+        {/* Tab Switcher */}
+        <div className="flex bg-gray-100 p-1 mx-3 mt-3 rounded-lg">
+          <button
+            onClick={() => {
+              setActiveTab('class');
+              setSelectedNote(null);
+              setSelectedSchoolNote(null);
+            }}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all ${
+              activeTab === 'class'
+                ? 'bg-white text-green-700 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Class Notes
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('school');
+              setSelectedNote(null);
+              setSelectedSchoolNote(null);
+            }}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all ${
+              activeTab === 'school'
+                ? 'bg-white text-green-700 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            School Notes
+          </button>
         </div>
 
         {/* Subject Filter */}
@@ -191,53 +277,114 @@ export default function NotesApp() {
 
         {/* Notes List */}
         <div className="flex-1 overflow-y-auto">
-          {filteredNotes.length > 0 ? (
-            filteredNotes.map(note => (
-              <div
-                key={note.id}
-                onClick={() => setSelectedNote(note)}
-                className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${selectedNote?.id === note.id ? 'bg-green-50 border-l-4 border-l-green-500' : ''
-                  }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-2 mb-1">
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: subjectColors[note.subject] || '#6B7280' }}
-                      />
-                      <span className="text-xs font-medium text-gray-500">
-                        {subjectNames[note.subject] || note.subject}
-                      </span>
-                    </div>
-                    <h3 className="font-medium text-gray-900 truncate">{note.title}</h3>
-                    <div className="flex items-center mt-2 text-xs text-gray-500">
-                      <Calendar className="w-3 h-3 mr-1" />
-                      {new Date(note.updatedAt).toLocaleDateString()}
-                      <span className="mx-2">•</span>
-                      <span>Class {note.classLevel}</span>
+          {activeTab === 'class' ? (
+            filteredClassNotes.length > 0 ? (
+              filteredClassNotes.map(note => (
+                <div
+                  key={note.id}
+                  onClick={() => {
+                    setSelectedNote(note);
+                    setSelectedSchoolNote(null);
+                  }}
+                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${selectedNote?.id === note.id ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+                    }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: subjectColors[note.subject] || '#6B7280' }}
+                        />
+                        <span className="text-xs font-medium text-gray-500">
+                          {subjectNames[note.subject] || note.subject}
+                        </span>
+                      </div>
+                      <h3 className="font-medium text-gray-900 truncate">{note.title}</h3>
+                      <div className="flex items-center mt-2 text-xs text-gray-500">
+                        <Calendar className="w-3 h-3 mr-1" />
+                        {new Date(note.updatedAt).toLocaleDateString()}
+                        <span className="mx-2">•</span>
+                        <span>Class {note.classLevel}</span>
+                      </div>
                     </div>
                   </div>
+                  {note.tags.length > 0 && (
+                    <div className="flex gap-1 mt-2 flex-wrap">
+                      {note.tags.slice(0, 3).map(tag => (
+                        <span key={tag} className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {note.tags.length > 0 && (
-                  <div className="flex gap-1 mt-2 flex-wrap">
-                    {note.tags.slice(0, 3).map(tag => (
-                      <span key={tag} className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
+              ))
+            ) : (
+              <div className="p-8 text-center text-gray-500">
+                <FileText className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                <p className="font-medium">No notes found</p>
+                <p className="text-sm mt-1">Create notes from the Writing Canvas</p>
               </div>
-            ))
+            )
           ) : (
-            <div className="p-8 text-center text-gray-500">
-              <FileText className="w-12 h-12 mx-auto mb-2 text-gray-300" />
-              <p className="font-medium">No notes found</p>
-              <p className="text-sm mt-1">Create notes from the Writing Canvas</p>
-            </div>
+            isLoadingSchoolNotes ? (
+              <div className="flex items-center justify-center p-8">
+                <RefreshCw className="w-6 h-6 text-green-500 animate-spin" />
+              </div>
+            ) : filteredSchoolNotes.length > 0 ? (
+              filteredSchoolNotes.map(note => (
+                <div
+                  key={note.id}
+                  onClick={() => {
+                    setSelectedSchoolNote(note);
+                    setSelectedNote(null);
+                  }}
+                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${selectedSchoolNote?.id === note.id ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+                    }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: subjectColors[note.subject] || '#6B7280' }}
+                        />
+                        <span className="text-xs font-medium text-gray-500">
+                          {subjectNames[note.subject] || note.subject}
+                        </span>
+                        <span className="text-xs text-gray-400">• By {note.teacherName || 'Teacher'}</span>
+                      </div>
+                      <h3 className="font-medium text-gray-900 truncate">{note.title}</h3>
+                      <div className="flex items-center mt-2 text-xs text-gray-500">
+                        <Calendar className="w-3 h-3 mr-1" />
+                        {new Date(note.uploadedAt).toLocaleDateString()}
+                        <span className="mx-2">•</span>
+                        <span className="capitalize text-[10px] bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-semibold">{note.type === 'text' ? 'Text' : note.type.toUpperCase()}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {note.tags && note.tags.length > 0 && (
+                    <div className="flex gap-1 mt-2 flex-wrap">
+                      {note.tags.slice(0, 3).map((tag: string) => (
+                        <span key={tag} className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="p-8 text-center text-gray-500">
+                <FileText className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                <p className="font-medium">No school notes found</p>
+                <p className="text-sm mt-1">Shared teacher materials will appear here</p>
+              </div>
+            )
           )}
         </div>
+
 
         {/* Stats */}
         <div className="p-4 border-t border-gray-200 bg-gray-50">
@@ -249,9 +396,143 @@ export default function NotesApp() {
       </div>
 
       {/* Main Content - Note Viewer */}
-      <div className="flex-1 flex flex-col">
-        {selectedNote ? (
-          <div className="flex-1 p-6">
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {selectedSchoolNote ? (
+          <div className="flex-1 p-6 flex flex-col overflow-y-auto">
+            <div className="max-w-4xl mx-auto w-full flex-1 flex flex-col">
+              {/* Note Header */}
+              <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div>
+                    <div className="flex items-center space-x-2 mb-2">
+                      <div
+                        className="w-4 h-4 rounded-full"
+                        style={{ backgroundColor: subjectColors[selectedSchoolNote.subject] || '#6B7280' }}
+                      />
+                      <span className="text-sm font-medium" style={{ color: subjectColors[selectedSchoolNote.subject] }}>
+                        {subjectNames[selectedSchoolNote.subject] || selectedSchoolNote.subject}
+                      </span>
+                      <span className="text-gray-400">•</span>
+                      <span className="text-sm text-gray-500">Class {selectedSchoolNote.classId}</span>
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-900">{selectedSchoolNote.title}</h2>
+                  </div>
+                  {selectedSchoolNote.url && (
+                    <a
+                      href={selectedSchoolNote.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-semibold"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      <span>Open File</span>
+                    </a>
+                  )}
+                </div>
+
+                <div className="flex items-center space-x-4 text-sm text-gray-500">
+                  <div className="flex items-center">
+                    <Clock className="w-4 h-4 mr-1" />
+                    Uploaded: {new Date(selectedSchoolNote.uploadedAt).toLocaleString()}
+                  </div>
+                  <div className="flex items-center">
+                    <BookOpen className="w-4 h-4 mr-1" />
+                    By: {selectedSchoolNote.teacherName || 'Teacher'}
+                  </div>
+                </div>
+
+                {selectedSchoolNote.tags && selectedSchoolNote.tags.length > 0 && (
+                  <div className="flex items-center mt-4">
+                    <Tag className="w-4 h-4 text-gray-400 mr-2" />
+                    <div className="flex gap-2 flex-wrap">
+                      {selectedSchoolNote.tags.map((tag: string) => (
+                        <span key={tag} className="px-3 py-1 bg-green-100 text-green-700 text-sm rounded-full">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Note Content Viewer based on Type */}
+              {selectedSchoolNote.type === 'text' && (
+                <div className="bg-white rounded-2xl shadow-lg p-6 flex-1 min-h-[400px]">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 pb-2 border-b border-gray-100 flex items-center">
+                    <FileText className="w-5 h-5 text-green-600 mr-2" />
+                    Notes Content
+                  </h3>
+                  <div 
+                    className="prose max-w-none text-gray-800 font-sans leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSchoolNote.content || '') }}
+                  />
+                </div>
+              )}
+
+              {selectedSchoolNote.type === 'pdf' && (
+                <div className="bg-white rounded-2xl shadow-lg p-6 flex-1 flex flex-col min-h-[550px]">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 pb-2 border-b border-gray-100 flex items-center">
+                    <FileText className="w-5 h-5 text-red-500 mr-2" />
+                    PDF Document
+                  </h3>
+                  {selectedSchoolNote.url ? (
+                    <PDFViewer url={selectedSchoolNote.url} title={selectedSchoolNote.fileName || selectedSchoolNote.title} />
+                  ) : (
+                    <p className="text-gray-500 text-center py-12">PDF URL is not available.</p>
+                  )}
+                </div>
+              )}
+
+              {selectedSchoolNote.type === 'image' && (
+                <div className="bg-white rounded-2xl shadow-lg p-6 flex-1 flex flex-col min-h-[400px]">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 pb-2 border-b border-gray-100 flex items-center">
+                    <ImageIcon className="w-5 h-5 text-blue-500 mr-2" />
+                    Image Attachment
+                  </h3>
+                  {selectedSchoolNote.url ? (
+                    <div className="flex-1 flex flex-col items-center justify-center bg-gray-50 border border-gray-200 rounded-xl p-4">
+                      <img
+                        src={selectedSchoolNote.url}
+                        alt={selectedSchoolNote.title}
+                        className="max-w-full max-h-[500px] object-contain rounded-lg shadow-sm"
+                      />
+                      <a
+                        href={selectedSchoolNote.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-4 px-5 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors text-sm font-semibold flex items-center"
+                      >
+                        <ExternalLink className="w-4 h-4 mr-1" /> View High Resolution
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="text-gray-500 text-center py-12">Image URL is not available.</p>
+                  )}
+                </div>
+              )}
+
+              {/* Document/other fallback */}
+              {selectedSchoolNote.type !== 'text' && selectedSchoolNote.type !== 'pdf' && selectedSchoolNote.type !== 'image' && (
+                <div className="bg-white rounded-2xl shadow-lg p-6 flex-1 flex flex-col items-center justify-center min-h-[400px]">
+                  <FileText className="w-16 h-16 text-purple-500 mb-4" />
+                  <h3 className="text-xl font-bold text-gray-900 mb-1">{selectedSchoolNote.fileName || 'Shared Document'}</h3>
+                  <p className="text-sm text-gray-500 mb-6">{selectedSchoolNote.fileSize || 'Size unknown'}</p>
+                  {selectedSchoolNote.url && (
+                    <a
+                      href={selectedSchoolNote.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-6 py-2.5 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-lg shadow-md transition-all"
+                    >
+                      Download/View Document
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : selectedNote ? (
+          <div className="flex-1 p-6 overflow-y-auto">
             <div className="max-w-4xl mx-auto">
               {/* Note Header */}
               <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
@@ -399,17 +680,23 @@ export default function NotesApp() {
               <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
                 <BookOpen className="w-10 h-10 text-green-600" />
               </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">Your Class Notes</h3>
+              <h3 className="text-xl font-semibold text-gray-900 mb-2">
+                {activeTab === 'class' ? 'Your Class Notes' : 'School Notes'}
+              </h3>
               <p className="text-gray-500 mb-6 max-w-md">
-                Select a note from the sidebar to view, or create new notes from the Writing Canvas.
+                {activeTab === 'class'
+                  ? 'Select a note from the sidebar to view, or create new notes from the Writing Canvas.'
+                  : 'Select a shared note from the sidebar to view files, images, or text uploaded by your teachers.'}
               </p>
-              <button
-                onClick={handleCreateNewNote}
-                className="px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl hover:shadow-lg transition-all flex items-center space-x-2 mx-auto"
-              >
-                <Plus className="w-5 h-5" />
-                <span>Create New Note in Canvas</span>
-              </button>
+              {activeTab === 'class' && (
+                <button
+                  onClick={handleCreateNewNote}
+                  className="px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-xl hover:shadow-lg transition-all flex items-center space-x-2 mx-auto"
+                >
+                  <Plus className="w-5 h-5" />
+                  <span>Create New Note in Canvas</span>
+                </button>
+              )}
             </div>
           </div>
         )}

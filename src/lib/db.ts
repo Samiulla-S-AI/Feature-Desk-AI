@@ -314,7 +314,7 @@ export const saveCanvasNoteHybrid = async (studentId: string, subject: string, n
 /**
  * Updates an existing canvas note in Supabase student_notes table.
  */
-export const updateCanvasNoteHybrid = async (studentId: string, subject: string, noteId: string, noteData: any) => {
+export const updateCanvasNoteHybrid = async (studentId: string, _subject: string, noteId: string, noteData: any) => {
     try {
         const { error } = await supabase.from('student_notes')
             .update({

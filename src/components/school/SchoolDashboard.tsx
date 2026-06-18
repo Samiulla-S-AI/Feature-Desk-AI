@@ -247,7 +247,7 @@ export default function SchoolDashboard() {
 
             <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
                 {/* Tab Navigation */}
-                <div className="flex space-x-2 mb-8 bg-white/50 p-2 rounded-2xl backdrop-blur-sm">
+                <div className="flex space-x-2 mb-8 bg-white/50 p-2 rounded-2xl backdrop-blur-sm overflow-x-auto scrollbar-none whitespace-nowrap">
                     {[
                         { id: 'overview', label: 'Overview', icon: BarChart3 },
                         { id: 'absences', label: 'Substitute Management', icon: UserX },
@@ -261,7 +261,7 @@ export default function SchoolDashboard() {
                         <button
                             key={tab.id}
                             onClick={() => setActiveTab(tab.id as any)}
-                            className={`flex items-center space-x-2 px-6 py-3 rounded-xl font-medium transition-all ${activeTab === tab.id
+                            className={`flex items-center flex-shrink-0 whitespace-nowrap space-x-2 px-6 py-3 rounded-xl font-medium transition-all ${activeTab === tab.id
                                 ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg'
                                 : 'text-slate-600 hover:bg-white hover:shadow-md'
                                 }`}

@@ -116,9 +116,9 @@ export default function TeacherDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex overflow-y-auto">
+    <div className="h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex overflow-hidden">
       {/* Sidebar */}
-      <div className="w-64 bg-white shadow-lg flex flex-col">
+      <div className="w-64 bg-white shadow-lg flex flex-col h-full border-r border-gray-200">
         <div className="p-6 border-b">
           <div className="flex items-center space-x-2">
             <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
@@ -131,7 +131,7 @@ export default function TeacherDashboard() {
           </div>
         </div>
 
-        <nav className="mt-6 flex-1">
+        <nav className="mt-6 flex-1 overflow-y-auto pr-1">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             return (
@@ -154,7 +154,7 @@ export default function TeacherDashboard() {
         </nav>
 
         <div className="p-6 border-t">
-          <div className="flex items-center space-x-3 mb-4">
+          <div className="flex items-center space-x-3">
             <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-full flex items-center justify-center">
               <span className="text-white font-semibold">
                 {(user as any)?.teacher_name?.charAt(0) || 'T'}
@@ -167,18 +167,11 @@ export default function TeacherDashboard() {
               </p>
             </div>
           </div>
-          <button
-            onClick={logout}
-            className="w-full flex items-center px-3 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <LogOut className="w-4 h-4 mr-2" />
-            Sign Out
-          </button>
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Header */}
         <header className="bg-white shadow-sm px-6 py-4 border-b">
           <div className="flex items-center justify-between">
@@ -210,6 +203,15 @@ export default function TeacherDashboard() {
                 className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
               >
                 <RefreshCw className={`w-5 h-5 text-gray-600 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+              <div className="w-px h-6 bg-gray-200 mx-1" />
+              <button
+                onClick={logout}
+                className="flex items-center space-x-1.5 px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors text-sm font-medium"
+                title="Sign Out"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sign Out</span>
               </button>
             </div>
           </div>

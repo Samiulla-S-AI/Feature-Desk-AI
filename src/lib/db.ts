@@ -283,44 +283,98 @@ export const saveExamSubmissionHybrid = async (
 };
 
 /**
- * Saves canvas data (strokes, shapes) to Cloudinary and metadata to Supabase.
+ * Saves canvas data (strokes, shapes) to Supabase student_notes table directly.
  */
 export const saveCanvasNoteHybrid = async (studentId: string, subject: string, noteData: any) => {
     try {
-        // 1. Upload Content to Cloudinary as JSON
-        const jsonBlob = new Blob([JSON.stringify({
-            ...noteData,
-            savedAt: new Date()
-        })], { type: 'application/json' });
-
-        const downloadURL = await cloudinaryService.uploadFile(
-            jsonBlob,
-            `notes/${studentId}/${subject}`
-        );
-
-        console.log('✅ Canvas Note content uploaded to Cloudinary:', downloadURL);
-
-        // 2. Save Metadata to Supabase
-        const { error } = await supabase.from('notes_metadata').insert({
+        const { data, error } = await supabase.from('student_notes').insert({
             student_id: studentId,
             title: noteData.title || 'Untitled Note',
             subject_code: subject,
             note_type: 'handwritten',
             tags: noteData.tags || [],
-            mongo_content_id: downloadURL // Reusing this column to store the Cloudinary URL
-        });
+            content: JSON.stringify(noteData) // Store full JSON payload in content column
+        }).select().single();
 
         if (error) {
-            console.error('❌ Failed to save note metadata to Supabase:', error);
+            console.error('❌ Failed to save note to Supabase student_notes:', error);
             throw error;
         }
 
-        console.log('✅ Canvas Note metadata saved to Supabase');
-        return { success: true, url: downloadURL };
+        console.log('✅ Canvas Note saved to Supabase directly');
+        // Return a dummy url just to satisfy the interface, though we don't use it anymore
+        return { success: true, url: 'supabase://student_notes/' + data.id, id: data.id };
 
     } catch (error) {
         console.error('❌ Save Canvas Note Error:', error);
         return { success: false, error };
+    }
+};
+
+/**
+ * Updates an existing canvas note in Supabase student_notes table.
+ */
+export const updateCanvasNoteHybrid = async (studentId: string, _subject: string, noteId: string, noteData: any) => {
+    try {
+        const { error } = await supabase.from('student_notes')
+            .update({
+                content: JSON.stringify(noteData),
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', noteId)
+            .eq('student_id', studentId);
+
+        if (error) {
+            console.error('❌ Failed to update note in Supabase:', error);
+            throw error;
+        }
+
+        console.log('✅ Canvas Note updated in Supabase directly');
+        return { success: true, url: 'supabase://student_notes/' + noteId };
+
+    } catch (error) {
+        console.error('❌ Update Canvas Note Error:', error);
+        return { success: false, error };
+    }
+};
+
+/**
+ * Fetches all canvas notes for a student directly from student_notes table.
+ */
+export const fetchCanvasNotesHybrid = async (studentId: string) => {
+    try {
+        const { data: notesList, error } = await supabase
+            .from('student_notes')
+            .select('*')
+            .eq('student_id', studentId)
+            .eq('note_type', 'handwritten')
+            .order('updated_at', { ascending: false });
+
+        if (error) throw error;
+        
+        if (!notesList || notesList.length === 0) return [];
+
+        const parsedNotes = notesList.map((dbNote) => {
+            if (!dbNote.content) return null;
+            try {
+                const noteData = JSON.parse(dbNote.content);
+                return {
+                    ...noteData,
+                    id: dbNote.id,
+                    remoteUrl: 'supabase://student_notes/' + dbNote.id,
+                    createdAt: dbNote.created_at,
+                    updatedAt: dbNote.updated_at
+                };
+            } catch (err) {
+                console.error(`❌ Failed to parse content for note ${dbNote.id}:`, err);
+                return null;
+            }
+        });
+
+        return parsedNotes.filter(Boolean);
+    } catch (error) {
+        console.error('❌ Fetch Canvas Notes Error:', error);
+        return [];
     }
 };
 

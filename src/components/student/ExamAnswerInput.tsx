@@ -77,7 +77,7 @@ interface FloatingText {
 
 const VIRTUAL_WIDTH = 900;
 const COLORS = ['#000000', '#374151', '#EF4444', '#F97316', '#22C55E', '#3B82F6', '#6366F1', '#8B5CF6', '#EC4899'];
-const MIN_ZOOM = 0.5;
+const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
 
@@ -179,26 +179,18 @@ export default function ExamAnswerInput({
     const [isCanvasReady, setIsCanvasReady] = useState(false);
     const canvasHeightRef = useRef(0);
 
-    // Virtual keyboard
-    const [showFloatingKeyboard, setShowFloatingKeyboard] = useState(false);
-    const [keyboardPosition, setKeyboardPosition] = useState({ x: 50, y: 300 });
-    const [keyboardSize, setKeyboardSize] = useState({ width: 700, height: 280 });
-    const [isDraggingKeyboard, setIsDraggingKeyboard] = useState(false);
-    const [isResizingKeyboard, setIsResizingKeyboard] = useState(false);
-    const [isShiftPressed, setIsShiftPressed] = useState(false);
-    const dragStartRef = useRef({ x: 0, y: 0 });
-    const resizeStartRef = useRef({ width: 0, height: 0, x: 0, y: 0 });
+    // Removed floating virtual keyboard logic as per user request
 
     // ═══════════════════════════════════════════════════════════════════
     // CANVAS DIMENSIONS
     // ═══════════════════════════════════════════════════════════════════
 
-    // Base height per page — scales by number of pages
-    const BASE_PAGE_HEIGHT = marks >= 5 ? 550 : 400;
+    // Base height per page — scales by number of pages. Make base page height larger to avoid half split
+    const BASE_PAGE_HEIGHT = 1000;
 
     const getVirtualHeight = useCallback(() => {
-        // Canvas height = base page height × number of pages
-        return BASE_PAGE_HEIGHT * pageCount;
+        // Canvas height = base page height × number of pages (ensure it covers screen height to prevent half page splits)
+        return Math.max(BASE_PAGE_HEIGHT * pageCount, scrollContainerRef.current?.clientHeight || 0);
     }, [BASE_PAGE_HEIGHT, pageCount]);
 
     // Handle scroll to sync current page
@@ -379,21 +371,41 @@ export default function ExamAnswerInput({
         drawPaper(bgCtx, bgCanvas.width, bgCanvas.height);
     }, [paperType, drawPaper, isCanvasReady]);
 
-    // Auto-zoom to fill screen width when entering fullscreen, restore on exit
+    // Adaptive zoom effect to fit available parent/screen width
     useEffect(() => {
-        if (isFullscreen) {
-            // Save current zoom before auto-zooming
-            previousZoomRef.current = zoom;
-            // Calculate zoom to fill available width (minus padding/borders)
-            const availableWidth = window.innerWidth - 48; // p-4 (16*2) + border (4*2) + extra
-            const autoZoom = Math.min(Math.max(availableWidth / VIRTUAL_WIDTH, MIN_ZOOM), MAX_ZOOM);
-            setZoom(autoZoom);
-        } else {
-            // Restore previous zoom when exiting fullscreen
-            setZoom(previousZoomRef.current);
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isFullscreen]);
+        const handleResize = () => {
+            let availableWidth = 0;
+            if (isFullscreen) {
+                // In fullscreen, fit to window width with small margin
+                availableWidth = window.innerWidth - 32;
+            } else {
+                // Otherwise fit to parent element client width
+                const parent = scrollContainerRef.current?.parentElement;
+                if (parent) {
+                    availableWidth = parent.clientWidth - 16;
+                }
+            }
+            
+            if (availableWidth > 0) {
+                const fitZoom = Math.min(Math.max(availableWidth / VIRTUAL_WIDTH, MIN_ZOOM), MAX_ZOOM);
+                setZoom(fitZoom);
+            }
+        };
+
+        // Run initially
+        handleResize();
+
+        // Listen for window resize
+        window.addEventListener('resize', handleResize);
+        
+        // Also run after a tiny timeout to ensure DOM layout is complete
+        const t = setTimeout(handleResize, 100);
+
+        return () => {
+            window.removeEventListener('resize', handleResize);
+            clearTimeout(t);
+        };
+    }, [isFullscreen, questionId]);
 
     // ═══════════════════════════════════════════════════════════════════
     // UNDO / REDO (drawing canvas only)
@@ -998,83 +1010,6 @@ export default function ExamAnswerInput({
     //     setPaperType(type);
     // };
 
-    // ═══════════════════════════════════════════════════════════════════
-    // FLOATING KEYBOARD HANDLERS
-    // ═══════════════════════════════════════════════════════════════════
-
-    const handleKeyboardDragStart = (e: React.MouseEvent) => {
-        e.preventDefault();
-        setIsDraggingKeyboard(true);
-        dragStartRef.current = { x: e.clientX - keyboardPosition.x, y: e.clientY - keyboardPosition.y };
-    };
-
-    const handleKeyboardDrag = useCallback((e: MouseEvent) => {
-        if (!isDraggingKeyboard) return;
-        setKeyboardPosition({
-            x: Math.max(0, e.clientX - dragStartRef.current.x),
-            y: Math.max(0, e.clientY - dragStartRef.current.y)
-        });
-    }, [isDraggingKeyboard]);
-
-    const handleKeyboardDragEnd = useCallback(() => setIsDraggingKeyboard(false), []);
-
-    const handleResizeStart = (e: React.MouseEvent) => {
-        e.preventDefault(); e.stopPropagation();
-        setIsResizingKeyboard(true);
-        resizeStartRef.current = { width: keyboardSize.width, height: keyboardSize.height, x: e.clientX, y: e.clientY };
-    };
-
-    const handleResize = useCallback((e: MouseEvent) => {
-        if (!isResizingKeyboard) return;
-        setKeyboardSize({
-            width: Math.max(500, Math.min(1000, resizeStartRef.current.width + (e.clientX - resizeStartRef.current.x))),
-            height: Math.max(200, Math.min(450, resizeStartRef.current.height + (e.clientY - resizeStartRef.current.y)))
-        });
-    }, [isResizingKeyboard]);
-
-    const handleResizeEnd = useCallback(() => setIsResizingKeyboard(false), []);
-
-    useEffect(() => {
-        if (isDraggingKeyboard) {
-            window.addEventListener('mousemove', handleKeyboardDrag);
-            window.addEventListener('mouseup', handleKeyboardDragEnd);
-        }
-        return () => { window.removeEventListener('mousemove', handleKeyboardDrag); window.removeEventListener('mouseup', handleKeyboardDragEnd); };
-    }, [isDraggingKeyboard, handleKeyboardDrag, handleKeyboardDragEnd]);
-
-    useEffect(() => {
-        if (isResizingKeyboard) {
-            window.addEventListener('mousemove', handleResize);
-            window.addEventListener('mouseup', handleResizeEnd);
-        }
-        return () => { window.removeEventListener('mousemove', handleResize); window.removeEventListener('mouseup', handleResizeEnd); };
-    }, [isResizingKeyboard, handleResize, handleResizeEnd]);
-
-    const keyboardRows = [
-        ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '⌫'],
-        ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
-        ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', '↵'],
-        ['⇧', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.'],
-        ['Space']
-    ];
-
-    const handleVirtualKeyPress = (key: string) => {
-        if (key === '⇧') { setIsShiftPressed(!isShiftPressed); return; }
-        if (key === '⌫') { setTypedText(prev => prev.slice(0, -1)); return; }
-        if (key === '↵') { setTypedText(prev => prev + '\n'); return; }
-        if (key === 'Space') { setTypedText(prev => prev + ' '); return; }
-        const char = isShiftPressed ? key.toUpperCase() : key;
-        setTypedText(prev => prev + char);
-        if (isShiftPressed) setIsShiftPressed(false);
-    };
-
-    const getKeySize = () => {
-        const baseWidth = keyboardSize.width / 12;
-        const baseHeight = keyboardSize.height / 6;
-        return { width: Math.max(40, baseWidth), height: Math.max(40, baseHeight), fontSize: Math.max(14, Math.min(24, keyboardSize.width / 35)) };
-    };
-    const keyDimensions = getKeySize();
-
     const goToNextPage = () => {
         if (currentPage < pageCount) {
             scrollContainerRef.current?.scrollTo({ top: currentPage * BASE_PAGE_HEIGHT * zoom, behavior: 'smooth' });
@@ -1121,30 +1056,28 @@ export default function ExamAnswerInput({
     // ═══════════════════════════════════════════════════════════════════
 
     const renderToolbar = (compact: boolean = false) => (
-        <div className={`flex items-center gap-2 ${compact ? 'p-2' : 'p-3'} bg-gray-100 border-b flex-wrap select-none`}>
-            {/* Mode Toggle */}
-            <div className="flex bg-white rounded-lg p-1 shadow-sm border border-gray-200 shrink-0">
+        <div className={`flex items-center gap-2 md:gap-3 ${compact ? 'p-2' : 'p-3'} bg-gray-100 border-b flex-wrap select-none w-full`}>
+            {/* Mode Toggle Group */}
+            <div className="flex bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
                 <button
                     onClick={() => switchMode('write')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold transition-all ${answerMode === 'write' ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-50'}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${answerMode === 'write' ? 'bg-blue-100 text-blue-700' : 'text-gray-500 hover:bg-gray-50'}`}
                 >
                     <PenTool className="w-4 h-4" /> Write
                 </button>
                 <div className="w-px h-5 bg-gray-200 mx-1 self-center" />
                 <button
                     onClick={() => switchMode('type')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold transition-all ${answerMode === 'type' ? 'bg-purple-100 text-purple-700' : 'text-gray-500 hover:bg-gray-50'}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${answerMode === 'type' ? 'bg-purple-100 text-purple-700' : 'text-gray-500 hover:bg-gray-50'}`}
                 >
                     <Keyboard className="w-4 h-4" /> Type
                 </button>
             </div>
 
-            <div className="w-px h-7 bg-gray-300 mx-1" />
-
             {answerMode === 'write' && (
                 <>
-                    {/* Drawing Tools */}
-                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm">
+                    {/* Drawing Tools Group */}
+                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
                         <button onClick={() => setDrawTool('select')} className={`p-2 rounded-lg ${drawTool === 'select' ? 'bg-blue-500 text-white' : 'hover:bg-gray-100'}`} title="Select & Move">
                             <MousePointer className="w-4 h-4" />
                         </button>
@@ -1169,10 +1102,8 @@ export default function ExamAnswerInput({
                         </button>
                     </div>
 
-                    <div className="w-px h-7 bg-gray-300" />
-
-                    {/* Shapes */}
-                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm">
+                    {/* Shapes Group */}
+                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 flex-wrap">
                         {([['line', Minus], ['arrow', ArrowRight], ['rectangle', Square], ['circle', Circle], ['triangle', Triangle], ['star', Star], ['heart', Heart], ['hexagon', Hexagon]] as const).map(([tool, Icon]) => (
                             <button key={tool} onClick={() => setDrawTool(tool as DrawTool)} className={`p-2 rounded-lg ${drawTool === tool ? 'bg-blue-500 text-white' : 'hover:bg-gray-100'}`} title={tool}>
                                 <Icon className="w-4 h-4" />
@@ -1180,39 +1111,34 @@ export default function ExamAnswerInput({
                         ))}
                     </div>
 
-                    <div className="w-px h-7 bg-gray-300" />
-
                     {/* Text Formatting Tools (Visible only when text is selected) */}
                     {drawTool === 'select' && selectedTextId && (
-                        <>
-                            <div className="flex items-center gap-1 bg-blue-50 border border-blue-200 rounded-xl p-1 shadow-sm">
-                                <button onClick={() => {
-                                    setFloatingTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, isBold: !t.isBold } : t));
-                                    triggerSave();
-                                }} className={`p-1.5 rounded-lg ${floatingTexts.find(t => t.id === selectedTextId)?.isBold ? 'bg-blue-500 text-white' : 'hover:bg-white text-gray-700'}`} title="Bold">
-                                    <Bold className="w-4 h-4" />
-                                </button>
-                                <input type="range" min="12" max="72" value={floatingTexts.find(t => t.id === selectedTextId)?.fontSize || 20}
-                                    onChange={e => {
-                                        setFloatingTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, fontSize: Number(e.target.value) } : t));
-                                    }}
-                                    onMouseUp={triggerSave}
-                                    onTouchEnd={triggerSave}
-                                    className="w-20 mx-2 accent-blue-600" title="Font Size" />
-                                <button onClick={() => {
-                                    setFloatingTexts(prev => prev.filter(t => t.id !== selectedTextId));
-                                    setSelectedTextId(null);
-                                    triggerSave();
-                                }} className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg" title="Delete Text">
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            </div>
-                            <div className="w-px h-7 bg-gray-300" />
-                        </>
+                        <div className="flex items-center gap-1 bg-blue-50 border border-blue-200 rounded-xl p-1 shadow-sm shrink-0">
+                            <button onClick={() => {
+                                setFloatingTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, isBold: !t.isBold } : t));
+                                triggerSave();
+                            }} className={`p-1.5 rounded-lg ${floatingTexts.find(t => t.id === selectedTextId)?.isBold ? 'bg-blue-500 text-white' : 'hover:bg-white text-gray-700'}`} title="Bold">
+                                <Bold className="w-4 h-4" />
+                            </button>
+                            <input type="range" min="12" max="72" value={floatingTexts.find(t => t.id === selectedTextId)?.fontSize || 20}
+                                onChange={e => {
+                                    setFloatingTexts(prev => prev.map(t => t.id === selectedTextId ? { ...t, fontSize: Number(e.target.value) } : t));
+                                }}
+                                onMouseUp={triggerSave}
+                                onTouchEnd={triggerSave}
+                                className="w-20 mx-2 accent-blue-600" title="Font Size" />
+                            <button onClick={() => {
+                                setFloatingTexts(prev => prev.filter(t => t.id !== selectedTextId));
+                                setSelectedTextId(null);
+                                triggerSave();
+                            }} className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg" title="Delete Text">
+                                <Trash2 className="w-4 h-4" />
+                            </button>
+                        </div>
                     )}
 
-                    {/* Colors */}
-                    <div className="flex items-center gap-1 flex-wrap">
+                    {/* Colors Group */}
+                    <div className="flex items-center gap-1.5 bg-white rounded-xl p-1.5 shadow-sm border border-gray-200 flex-wrap max-w-xs md:max-w-none">
                         {COLORS.map(color => (
                             <button
                                 key={color}
@@ -1224,28 +1150,28 @@ export default function ExamAnswerInput({
                                         triggerSave();
                                     }
                                 }}
-                                className={`w-6 h-6 rounded-full border-2 ${penColor === color ? 'border-blue-500 ring-2 ring-blue-200 scale-110' : 'border-gray-300'}`}
+                                className={`w-6 h-6 rounded-full border-2 ${penColor === color ? 'border-blue-500 ring-2 ring-blue-200 scale-110' : 'border-gray-300'} transition-transform`}
                                 style={{ backgroundColor: color }}
                             />
                         ))}
                     </div>
 
-                    <div className="w-px h-7 bg-gray-300" />
-
-                    {/* Pen Sizes */}
-                    {[2, 4, 6].map(size => (
-                        <button key={size} onClick={() => setPenSize(size)} className={`p-2 rounded-lg ${penSize === size ? 'bg-blue-100' : 'hover:bg-gray-200'}`}>
-                            <div className="rounded-full bg-gray-800 mx-auto" style={{ width: size * 2.5, height: size * 2.5 }} />
-                        </button>
-                    ))}
+                    {/* Pen Sizes Group */}
+                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
+                        {[2, 4, 6].map(size => (
+                            <button key={size} onClick={() => setPenSize(size)} className={`p-2 rounded-lg ${penSize === size ? 'bg-blue-100' : 'hover:bg-gray-100'}`}>
+                                <div className="rounded-full bg-gray-800 mx-auto" style={{ width: size * 2.5, height: size * 2.5 }} />
+                            </button>
+                        ))}
+                    </div>
                 </>
             )}
 
-            {/* ═══ TYPE MODE TOOLS (replaces pen/highlighter/eraser with text formatting) ═══ */}
+            {/* ═══ TYPE MODE TOOLS ═══ */}
             {answerMode === 'type' && (
                 <>
-                    {/* Text Formatting Group — execCommand-based (Word-like, per-selection) */}
-                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm">
+                    {/* Text Formatting Group */}
+                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
                         <button
                             onMouseDown={e => { e.preventDefault(); applyFormat('bold'); }}
                             className="p-2 rounded-lg transition-all hover:bg-gray-100 font-bold text-gray-700"
@@ -1269,36 +1195,33 @@ export default function ExamAnswerInput({
                         </button>
                     </div>
 
-                    <div className="w-px h-7 bg-gray-300" />
+                    {/* Font Selections Group */}
+                    <div className="flex items-center gap-1.5 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
+                        <select
+                            value={typingFontFamily}
+                            onChange={e => setTypingFontFamily(e.target.value)}
+                            className="px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs font-semibold cursor-pointer outline-none focus:ring-1 focus:ring-purple-500"
+                            title="Font Family"
+                        >
+                            {FONT_FAMILIES.map(f => (
+                                <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+                            ))}
+                        </select>
 
-                    {/* Font Family */}
-                    <select
-                        value={typingFontFamily}
-                        onChange={e => setTypingFontFamily(e.target.value)}
-                        className="px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-sm shadow-sm font-medium cursor-pointer focus:ring-2 focus:ring-purple-200 outline-none"
-                        title="Font Family"
-                    >
-                        {FONT_FAMILIES.map(f => (
-                            <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
-                        ))}
-                    </select>
+                        <select
+                            value={typingFontSize}
+                            onChange={e => setTypingFontSize(Number(e.target.value))}
+                            className="px-2 py-1 bg-white border border-gray-200 rounded-lg text-xs font-semibold cursor-pointer outline-none w-16 focus:ring-1 focus:ring-purple-500"
+                            title="Font Size"
+                        >
+                            {FONT_SIZES.map(s => (
+                                <option key={s} value={s}>{s}px</option>
+                            ))}
+                        </select>
+                    </div>
 
-                    {/* Font Size */}
-                    <select
-                        value={typingFontSize}
-                        onChange={e => setTypingFontSize(Number(e.target.value))}
-                        className="px-2 py-1.5 bg-white border border-gray-200 rounded-lg text-sm shadow-sm font-medium cursor-pointer focus:ring-2 focus:ring-purple-200 outline-none w-16"
-                        title="Font Size"
-                    >
-                        {FONT_SIZES.map(s => (
-                            <option key={s} value={s}>{s}px</option>
-                        ))}
-                    </select>
-
-                    <div className="w-px h-7 bg-gray-300" />
-
-                    {/* Alignment */}
-                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm">
+                    {/* Alignment Group */}
+                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
                         <button onClick={() => setTypingAlignment('left')} className={`p-2 rounded-lg ${typingAlignment === 'left' ? 'bg-purple-500 text-white' : 'hover:bg-gray-100'}`} title="Align Left">
                             <AlignLeft className="w-4 h-4" />
                         </button>
@@ -1310,94 +1233,86 @@ export default function ExamAnswerInput({
                         </button>
                     </div>
 
-                    <div className="w-px h-7 bg-gray-300" />
-
-                    {/* Colors (also for typing) */}
-                    <div className="flex items-center gap-1 flex-wrap">
+                    {/* Typing Colors Group */}
+                    <div className="flex items-center gap-1.5 bg-white rounded-xl p-1.5 shadow-sm border border-gray-200 flex-wrap max-w-xs md:max-w-none">
                         {COLORS.map(color => (
                             <button
                                 key={color}
                                 onClick={() => setPenColor(color)}
-                                className={`w-6 h-6 rounded-full border-2 ${penColor === color ? 'border-purple-500 ring-2 ring-purple-200 scale-110' : 'border-gray-300'}`}
+                                className={`w-6 h-6 rounded-full border-2 ${penColor === color ? 'border-purple-500 ring-2 ring-purple-200 scale-110' : 'border-gray-300'} transition-transform`}
                                 style={{ backgroundColor: color }}
                             />
                         ))}
                     </div>
 
-                    <div className="w-px h-7 bg-gray-300" />
-
-                    {/* Virtual Keyboard + Clear */}
-                    <button
-                        onClick={() => setShowFloatingKeyboard(!showFloatingKeyboard)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm font-semibold transition-all ${showFloatingKeyboard ? 'bg-purple-500 text-white' : 'bg-white hover:bg-gray-100 shadow-sm border border-gray-200'}`}
-                    >
-                        <Keyboard className="w-4 h-4" />
-                        Keyboard
-                    </button>
-                    <button onClick={() => {
-                        setTypedText('');
-                        setTypedHtmlForDisplay('');
-                        typedHtmlRef.current = '';
-                        if (typingAreaRef.current) typingAreaRef.current.innerHTML = '';
-                    }} className="flex items-center gap-1 px-2.5 py-1.5 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 text-sm font-medium">
-                        <RotateCcw className="w-3.5 h-3.5" /> Clear
-                    </button>
+                    {/* Clear Group */}
+                    <div className="flex items-center gap-1.5 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
+                        <button onClick={() => {
+                            setTypedText('');
+                            setTypedHtmlForDisplay('');
+                            typedHtmlRef.current = '';
+                            if (typingAreaRef.current) typingAreaRef.current.innerHTML = '';
+                        }} className="flex items-center gap-1 px-2.5 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm font-semibold transition-colors">
+                            <RotateCcw className="w-3.5 h-3.5" /> Clear
+                        </button>
+                    </div>
                 </>
             )}
 
-            <div className="flex-1" />
+            {/* Spacer */}
+            <div className="flex-grow min-w-[8px] hidden md:block" />
 
-            {/* Word/Character count for typing */}
-            {answerMode === 'type' && typedText.length > 0 && (
-                <span className="text-xs text-gray-500 bg-white px-2 py-1 rounded-md border border-gray-200 shadow-sm">
-                    {typedText.split(/\s+/).filter(Boolean).length} words • {typedText.length} chars
-                </span>
-            )}
+            {/* Right Group: Count, Pagination, Zoom, Undo/Redo, Fullscreen */}
+            <div className="flex items-center gap-2 flex-wrap ml-auto">
+                {/* Count for typing */}
+                {answerMode === 'type' && typedText.length > 0 && (
+                    <span className="text-xs font-semibold text-gray-500 bg-white px-2 py-1.5 rounded-lg border border-gray-200 shadow-sm shrink-0">
+                        {typedText.split(/\s+/).filter(Boolean).length} words • {typedText.length} chars
+                    </span>
+                )}
 
-            {/* Pagination inside toolbar */}
-            {renderPagination(false)}
-            <div className="w-px h-7 bg-gray-300 mx-2" />
+                {/* Pagination */}
+                {renderPagination(false)}
 
-            {/* Zoom */}
-            <div className="flex items-center gap-1 bg-white rounded-lg p-1 shadow-sm">
-                <button onClick={handleZoomOut} className="p-1.5 rounded hover:bg-gray-100" title="Zoom Out">
-                    <ZoomOut className="w-4 h-4" />
-                </button>
-                <span className="text-xs font-medium text-gray-600 min-w-[40px] text-center">{Math.round(zoom * 100)}%</span>
-                <button onClick={handleZoomIn} className="p-1.5 rounded hover:bg-gray-100" title="Zoom In">
-                    <ZoomIn className="w-4 h-4" />
-                </button>
+                {/* Zoom Control */}
+                <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
+                    <button onClick={handleZoomOut} className="p-1.5 rounded-lg hover:bg-gray-100" title="Zoom Out">
+                        <ZoomOut className="w-4 h-4" />
+                    </button>
+                    <span className="text-xs font-bold text-gray-700 min-w-[42px] text-center">{Math.round(zoom * 100)}%</span>
+                    <button onClick={handleZoomIn} className="p-1.5 rounded-lg hover:bg-gray-100" title="Zoom In">
+                        <ZoomIn className="w-4 h-4" />
+                    </button>
+                </div>
+
+                {/* Write Mode Undo/Redo/Clear */}
+                {answerMode === 'write' && (
+                    <div className="flex items-center gap-1 bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
+                        <button onClick={undo} disabled={historyIndex <= 0} className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-30 transition-colors" title="Undo">
+                            <Undo2 className="w-4 h-4" />
+                        </button>
+                        <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-30 transition-colors" title="Redo">
+                            <Redo2 className="w-4 h-4" />
+                        </button>
+                        <button onClick={clearCanvas} className="flex items-center gap-1 px-2.5 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm font-semibold transition-colors">
+                            <RotateCcw className="w-3.5 h-3.5" /> Clear Canvas
+                        </button>
+                    </div>
+                )}
+
+                {/* Fullscreen Button */}
+                {!isFullscreen && (
+                    <div className="flex items-center bg-white rounded-xl p-1 shadow-sm border border-gray-200 shrink-0">
+                        <button
+                            onClick={() => setIsFullscreen(true)}
+                            className="p-1.5 px-3 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-all font-semibold flex items-center gap-1 text-sm"
+                            title="Fullscreen for comfortable writing"
+                        >
+                            <Maximize2 className="w-4 h-4" /> Fullscreen
+                        </button>
+                    </div>
+                )}
             </div>
-
-            {answerMode === 'write' && (
-                <>
-                    <div className="w-px h-7 bg-gray-300 mx-2" />
-                    {/* Undo/Redo/Clear for drawing */}
-                    <button onClick={undo} disabled={historyIndex <= 0} className="p-2 rounded-lg hover:bg-gray-200 disabled:opacity-30" title="Undo">
-                        <Undo2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-2 rounded-lg hover:bg-gray-200 disabled:opacity-30" title="Redo">
-                        <Redo2 className="w-4 h-4" />
-                    </button>
-                    <button onClick={clearCanvas} className="flex items-center gap-1 px-3 py-1.5 mx-1 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 text-sm font-medium">
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        Clear Drawing
-                    </button>
-                </>
-            )}
-
-            {!isFullscreen && (
-                <>
-                    <div className="w-px h-7 bg-gray-300 mx-1" />
-                    <button
-                        onClick={() => setIsFullscreen(true)}
-                        className="p-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-all font-semibold flex items-center gap-1"
-                        title="Fullscreen for comfortable writing"
-                    >
-                        <Maximize2 className="w-4 h-4" /> Fullscreen
-                    </button>
-                </>
-            )}
         </div>
     );
 
@@ -1449,9 +1364,10 @@ export default function ExamAnswerInput({
                         className="overflow-auto border-2 border-gray-300 rounded-xl bg-gray-200 shadow-inner relative"
                         style={{
                             height: isFullscreen
-                                ? 'calc(100vh - 150px)'
-                                : `${Math.min(BASE_PAGE_HEIGHT * zoom, 550)}px`,
-                            width: `${VIRTUAL_WIDTH * zoom}px`, // Fixed width viewport for better centering
+                                ? 'calc(100vh - 180px)'
+                                : 'clamp(250px, 45vh, 500px)',
+                            width: '100%',
+                            maxWidth: `${VIRTUAL_WIDTH * zoom}px`,
                             margin: '0 auto'
                         }}
                     >
@@ -1576,7 +1492,8 @@ export default function ExamAnswerInput({
                                         }
 
                                         if (clickedLineIndex > currentLastLineIndex) {
-                                            e.preventDefault();
+                                            // Focus to ensure system keyboard triggers, instead of preventing default
+                                            el.focus();
                                             const linesToAdd = clickedLineIndex - currentLastLineIndex;
                                             const textNode = document.createTextNode('\n'.repeat(linesToAdd));
                                             el.appendChild(textNode);
@@ -1700,62 +1617,6 @@ export default function ExamAnswerInput({
                 )}
             </div>
 
-            {/* ─── Floating Virtual Keyboard ─── */}
-            {answerMode === 'type' && showFloatingKeyboard && (
-                <div
-                    className="fixed z-[9999] bg-gradient-to-b from-gray-200 to-gray-300 rounded-2xl shadow-2xl border-2 border-gray-400"
-                    style={{ left: keyboardPosition.x, top: keyboardPosition.y, width: keyboardSize.width }}
-                >
-                    <div
-                        className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-purple-600 to-indigo-700 text-white cursor-move rounded-t-2xl"
-                        onMouseDown={handleKeyboardDragStart}
-                    >
-                        <div className="flex items-center gap-3">
-                            <GripHorizontal className="w-6 h-6 opacity-70" />
-                            <span className="font-bold">Virtual Keyboard</span>
-                        </div>
-                        <button onClick={() => setShowFloatingKeyboard(false)} className="p-2 rounded-lg hover:bg-white/20">
-                            <X className="w-5 h-5" />
-                        </button>
-                    </div>
-
-                    <div className="p-4 space-y-2">
-                        {keyboardRows.map((row, rowIndex) => (
-                            <div key={rowIndex} className="flex justify-center gap-1.5">
-                                {row.map((key) => {
-                                    const isSpecialKey = ['⌫', '↵', '⇧', 'Space'].includes(key);
-                                    const isActive = key === '⇧' && isShiftPressed;
-                                    const displayKey = isShiftPressed && key.length === 1 && /[a-z]/.test(key) ? key.toUpperCase() : key;
-
-                                    return (
-                                        <button
-                                            key={key}
-                                            onClick={() => handleVirtualKeyPress(key)}
-                                            className={`rounded-xl font-bold shadow-md border-2 ${isActive ? 'bg-purple-500 text-white border-purple-600' : 'bg-white hover:bg-purple-50 border-gray-300'} transition-all active:scale-95`}
-                                            style={{
-                                                width: key === 'Space' ? keyDimensions.width * 6 : isSpecialKey ? keyDimensions.width * 1.5 : keyDimensions.width,
-                                                height: keyDimensions.height,
-                                                fontSize: keyDimensions.fontSize
-                                            }}
-                                        >
-                                            {key === 'Space' ? '━━ Space ━━' : displayKey}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        ))}
-                    </div>
-
-                    <div
-                        className="absolute bottom-0 right-0 w-8 h-8 cursor-se-resize flex items-center justify-center bg-gray-400 rounded-tl-lg hover:bg-gray-500"
-                        onMouseDown={handleResizeStart}
-                    >
-                        <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M22 22H18V18H22V22ZM22 16H16V22H22V16ZM14 22H10V18H14V22Z" />
-                        </svg>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

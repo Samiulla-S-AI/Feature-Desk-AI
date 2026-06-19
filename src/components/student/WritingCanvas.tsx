@@ -6,14 +6,14 @@ import {
   Maximize, Minimize, Plus, ChevronLeft, ChevronRight, Layers,
   Grid3X3, FileText, Sparkles, BookOpen, PenTool, Keyboard, RotateCcw,
   Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight,
-  Palette, Group, GripHorizontal, X
+  Palette, Group, GripHorizontal, X, Save
 } from 'lucide-react';
 /* Unused imports removed */
 import { useAuth } from '../../contexts/AuthContext';
 /* useNavigate removed */
 import HandwritingConverter from './HandwritingConverter';
 import AdaptiveQuiz from './AdaptiveQuiz';
-import { saveCanvasNoteHybrid } from '../../lib/db';
+import { saveCanvasNoteHybrid, updateCanvasNoteHybrid } from '../../lib/db';
 import { compressImage } from '../../utils/compression';
 
 // Types
@@ -164,6 +164,7 @@ export default function WritingCanvas() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pages, setPages] = useState<{ [key: number]: DrawingElement[] }>({ 1: [] });
   const [totalPages, setTotalPages] = useState(1);
+  const [pageThumbnails, setPageThumbnails] = useState<{ [key: number]: string }>({});
 
   // Text input
   const [textInput, setTextInput] = useState('');
@@ -198,6 +199,32 @@ export default function WritingCanvas() {
 
   // Features
   const [showHandwritingConverter, setShowHandwritingConverter] = useState(false);
+  const [currentNoteId, setCurrentNoteId] = useState<string | null>(null);
+
+  // Load requested note/exam data
+  useEffect(() => {
+    const loadNote = localStorage.getItem('load_note_in_canvas');
+    if (loadNote) {
+      try {
+        const note = JSON.parse(loadNote);
+        if (note.id) setCurrentNoteId(note.id);
+        if (note.elements) setElements(note.elements);
+        if (note.pages) setPages(note.pages);
+        if (note.totalPages) setTotalPages(note.totalPages);
+        if (note.currentPage) setCurrentPage(note.currentPage);
+        if (note.title) setNoteTitle(note.title);
+        // Clean up
+        localStorage.removeItem('load_note_in_canvas');
+      } catch (e) {
+        console.error('Failed to load note data', e);
+      }
+    }
+    const createNew = localStorage.getItem('create_new_note');
+    if (createNew) {
+      // Setup fresh state if needed
+      localStorage.removeItem('create_new_note');
+    }
+  }, []);
   const [showAdaptiveQuiz, setShowAdaptiveQuiz] = useState(false);
 
   // Virtual keyboard state
@@ -1497,45 +1524,98 @@ export default function WritingCanvas() {
   const [noteTags, setNoteTags] = useState('');
 
   // Save as Class Note
+  const handleSave = async (isSaveAs: boolean) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (isSaveAs) {
+      setShowSaveNoteDialog(true);
+      return;
+    }
+
+    // Direct Save (Overwrite)
+    console.log('Overwriting note...');
+    const canvasImage = canvas.toDataURL('image/png');
+    const finalThumbnails = { ...pageThumbnails, [currentPage]: canvasImage };
+
+    const userId = (user as any)?.id || 'guest';
+    const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
+    
+    // Find existing note to preserve some metadata if needed, though we overwrite content
+    const existingNoteIndex = existingNotes.findIndex((n: any) => n.id === currentNoteId);
+    
+    if (existingNoteIndex >= 0) {
+      const existingNote = existingNotes[existingNoteIndex];
+      const noteData = {
+        ...existingNote,
+        elements: elements,
+        pages: pages,
+        totalPages: totalPages,
+        currentPage: currentPage,
+        canvasData: canvasImage,
+        pageThumbnails: finalThumbnails,
+        updatedAt: new Date().toISOString()
+      };
+      existingNotes[existingNoteIndex] = noteData;
+      localStorage.setItem(`class_notes_${userId}`, JSON.stringify(existingNotes));
+
+      // Sync to cloud if not a local-only placeholder ID
+      if (currentNoteId && !currentNoteId.startsWith('local_')) {
+          await updateCanvasNoteHybrid(userId, currentSubject.code, currentNoteId, noteData);
+      } else {
+          // If it was local only, we can attempt to save it as a new cloud note
+          const result = await saveCanvasNoteHybrid(userId, currentSubject.code, noteData);
+          if (result.success && result.id) {
+              noteData.id = result.id;
+              existingNotes[existingNoteIndex] = noteData;
+              localStorage.setItem(`class_notes_${userId}`, JSON.stringify(existingNotes));
+              setCurrentNoteId(result.id);
+          }
+      }
+
+      alert('Note saved successfully!');
+    } else {
+      // Fallback if not found
+      setShowSaveNoteDialog(true);
+    }
+  };
+
   const saveAsClassNote = async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Show loading state (could add a proper loader state)
-    // Ideally use a loading state here, but for now we'll rely on the alert/console
-    console.log('Saving note...');
+    console.log('Saving note as new...');
+    
+    const canvasImage = canvas.toDataURL('image/png');
+    const finalThumbnails = { ...pageThumbnails, [currentPage]: canvasImage };
 
     try {
-      // 1. Get Canvas Image (Thumbnail)
-      const canvasImage = canvas.toDataURL('image/png');
-
-      // 2. Prepare Note Data (Strokes + Metadata)
-      // We save the raw elements (strokes, shapes) to allow re-editing later!
       const noteData = {
         title: noteTitle || `${currentSubject.name} Notes - ${new Date().toLocaleDateString()}`,
         subject: currentSubject.code,
         classLevel: currentClass,
-        elements: elements, // Save the actual drawing elements!
-        thumbnail: canvasImage, // Save the image for quick preview
+        elements: elements,
+        pages: pages,
+        totalPages: totalPages, 
+        currentPage: currentPage,
+        canvasData: canvasImage,
+        pageThumbnails: finalThumbnails,
         tags: noteTags.split(',').map(t => t.trim()).filter(Boolean),
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
 
       const userId = (user as any)?.id || 'guest';
-
-      // 3. Save to Hybrid Storage (Firebase + Supabase)
-      // const { saveCanvasNoteHybrid } = await import('../../lib/db');
-
       const result = await saveCanvasNoteHybrid(userId, currentSubject.code, noteData);
 
       if (result.success) {
-        // Also save to localStorage for offline fallback / quick access
         const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
+        const newId = result.id || ('local_' + Date.now());
         localStorage.setItem(`class_notes_${userId}`, JSON.stringify([
-          { ...noteData, id: 'local_' + Date.now(), remoteUrl: result.url },
+          { ...noteData, id: newId, remoteUrl: result.url },
           ...existingNotes
         ]));
-
+        setCurrentNoteId(newId);
         alert('Note saved successfully to Cloud and Local Storage!');
       } else {
         throw new Error('Cloud save failed');
@@ -1545,7 +1625,6 @@ export default function WritingCanvas() {
       console.error('Failed to save note:', error);
       alert('Failed to save note to cloud. Saved locally only.');
 
-      // Fallback local save
       const userId = (user as any)?.id || 'guest';
       const noteId = Date.now().toString();
       const newNote = {
@@ -1554,15 +1633,20 @@ export default function WritingCanvas() {
         subject: currentSubject.code,
         classLevel: currentClass,
         elements: elements,
+        pages: pages,
+        totalPages: totalPages,
+        currentPage: currentPage,
+        canvasData: canvasImage,
+        pageThumbnails: finalThumbnails,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         tags: noteTags.split(',').map(t => t.trim()).filter(Boolean)
       };
       const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
       localStorage.setItem(`class_notes_${userId}`, JSON.stringify([newNote, ...existingNotes]));
+      setCurrentNoteId(noteId);
     }
 
-    // Reset dialog
     setShowSaveNoteDialog(false);
     setNoteTitle('');
     setNoteTags('');
@@ -1643,6 +1727,9 @@ export default function WritingCanvas() {
   // Page management
   const addPage = () => {
     const newPageNum = totalPages + 1;
+    if (canvasRef.current) {
+      setPageThumbnails(prev => ({ ...prev, [currentPage]: canvasRef.current!.toDataURL('image/png') }));
+    }
     setPages(prev => ({ ...prev, [currentPage]: elements, [newPageNum]: [] }));
     setTotalPages(newPageNum);
     setCurrentPage(newPageNum);
@@ -1651,6 +1738,9 @@ export default function WritingCanvas() {
 
   const goToPage = (pageNum: number) => {
     if (pageNum < 1 || pageNum > totalPages) return;
+    if (canvasRef.current) {
+      setPageThumbnails(prev => ({ ...prev, [currentPage]: canvasRef.current!.toDataURL('image/png') }));
+    }
     setPages(prev => ({ ...prev, [currentPage]: elements }));
     setCurrentPage(pageNum);
     setElements(pages[pageNum] || []);
@@ -1789,9 +1879,9 @@ export default function WritingCanvas() {
 
         {/* Horizontal Drawing Toolbar */}
         <div className="bg-white border-b border-slate-200 px-4 py-2">
-          <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             {/* Left: Drawing Tools */}
-            <div className="flex items-center gap-1 justify-self-start">
+            <div className="flex flex-wrap items-center gap-2">
               {/* Mode Toggle */}
               <div className="flex bg-slate-100 rounded-lg p-1 shadow-inner border border-slate-200 shrink-0 mr-4">
                 <button
@@ -2337,8 +2427,8 @@ export default function WritingCanvas() {
               )}
             </div>
 
-            {/* Center: Paper Settings */}
-            <div className="flex items-center space-x-2 justify-self-center">
+            {/* Center: Canvas Controls */}
+            <div className="flex flex-wrap items-center gap-2 justify-center">
               {[
                 { type: 'blank', label: 'Blank', icon: <Layers className="w-4 h-4" /> },
                 { type: 'ruled', label: 'Ruled', icon: <Minus className="w-4 h-4" /> },
@@ -2364,8 +2454,8 @@ export default function WritingCanvas() {
               </label>
             </div>
 
-            {/* Right: Zoom & Actions */}
-            <div className="flex items-center space-x-2 justify-self-end">
+            {/* Right: Actions */}
+            <div className="flex flex-wrap items-center gap-2 justify-end">
               <div className="flex items-center bg-slate-100 rounded-lg">
                 <button onClick={zoomOut} className="p-1.5 hover:bg-slate-200 rounded-l-lg">
                   <ZoomOut className="w-4 h-4 text-slate-600" />
@@ -2397,13 +2487,24 @@ export default function WritingCanvas() {
                 <Download className="w-5 h-5" />
               </button>
 
+              {currentNoteId && (
+                <button
+                  onClick={() => handleSave(false)}
+                  className="flex items-center space-x-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-medium shadow-sm hover:shadow-md transition-all"
+                  title="Save Changes to Current Note"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Save</span>
+                </button>
+              )}
+
               <button
-                onClick={() => setShowSaveNoteDialog(true)}
+                onClick={() => handleSave(true)}
                 className="flex items-center space-x-1 px-3 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 text-sm font-medium shadow-sm hover:shadow-md transition-all"
-                title="Save as Class Note"
+                title="Save as new Class Note"
               >
                 <BookOpen className="w-4 h-4" />
-                <span>Save Note</span>
+                <span>Save As</span>
               </button>
 
               <button onClick={toggleFullscreen} className="p-2 hover:bg-slate-100 rounded-lg text-slate-600" title="Fullscreen">
@@ -2816,10 +2917,10 @@ export default function WritingCanvas() {
                 <button
                   key={c}
                   onClick={() => handleClassChange(c)}
-                  className={`px - 3 py - 3 text - sm font - medium rounded - lg transition - colors border ${currentClass === c
+                  className={`px-3 py-3 text-sm font-medium rounded-lg transition-colors border ${currentClass === c
                     ? 'bg-blue-500 text-white border-blue-600'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
-                    } `}
+                    }`}
                 >
                   {c}
                 </button>
@@ -2845,15 +2946,15 @@ export default function WritingCanvas() {
                 <button
                   key={subj.code}
                   onClick={() => handleSubjectChange(subj.code)}
-                  className={`px - 3 py - 3 text - sm font - medium rounded - lg transition - colors text - left flex items - center space - x - 2 border ${currentSubject.code === subj.code
+                  className={`px-3 py-3 text-sm font-medium rounded-lg transition-colors text-left flex items-center space-x-2 border ${currentSubject.code === subj.code
                     ? 'text-white border-transparent'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
-                    } `}
+                    }`}
                   style={{
                     backgroundColor: currentSubject.code === subj.code ? subj.color : undefined
                   }}
                 >
-                  <div className={`w - 3 h - 3 rounded - full ${currentSubject.code === subj.code ? 'bg-white' : ''} `} style={{ backgroundColor: currentSubject.code !== subj.code ? subj.color : undefined }}></div>
+                  <div className={`w-3 h-3 rounded-full ${currentSubject.code === subj.code ? 'bg-white' : ''}`} style={{ backgroundColor: currentSubject.code !== subj.code ? subj.color : undefined }}></div>
                   <span>{subj.name}</span>
                 </button>
               ))}

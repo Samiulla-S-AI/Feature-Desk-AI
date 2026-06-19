@@ -558,7 +558,7 @@ export const getPublishedResults = async (_teacherId: string, classId?: number):
                     total_marks: sub.max_score || sub.assessments?.total_marks || 100,
                     grade: sub.grade || '',
                     teacher_approved: true,
-                    feedback: '', // We might want to fetch feedback if stored
+                    feedback: sub.feedback || '', // We might want to fetch feedback if stored
                     submitted_at: sub.submitted_at || sub.created_at
                 });
             }
@@ -622,16 +622,27 @@ export const getPublishedResults = async (_teacherId: string, classId?: number):
 };
 
 // Approve AI-suggested grade
-export const approveGrade = async (resultId: string, finalGrade: string, feedback?: string): Promise<boolean> => {
+export const approveGrade = async (
+    resultId: string, 
+    finalGrade: string, 
+    score: number, 
+    feedback?: string,
+    questionFeedback?: any[]
+): Promise<boolean> => {
     try {
         // Try updating exam_submissions first (preferred)
         const updateData: any = {
             grade: finalGrade,
-            status: 'graded'
+            status: 'graded',
+            total_score: score
         };
 
         if (feedback) {
             updateData.feedback = feedback;
+        }
+
+        if (questionFeedback) {
+            updateData.question_feedback = questionFeedback;
         }
 
         const { error: subError, count } = await supabase
@@ -650,7 +661,9 @@ export const approveGrade = async (resultId: string, finalGrade: string, feedbac
             .from('quiz_results')
             .update({
                 grade: finalGrade,
-                feedback: feedback || ''
+                score: score,
+                feedback: feedback || '',
+                answers: questionFeedback || []
             })
             .eq('id', resultId);
 
@@ -667,8 +680,17 @@ export const saveQuestionFeedback = async (
     submissionId: string,
     questionAnswerId: string, // ID from student_answers table
     feedback: string,
-    imageUrl?: string
+    imageUrl?: string,
+    marksAwarded?: number
 ): Promise<boolean> => {
+    // Validate that questionAnswerId is a valid UUID format before querying Supabase
+    // If it is a string like "1", "2" or non-UUID, skip database update to prevent Postgres 22P02 type errors.
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(questionAnswerId);
+    if (!isUuid) {
+        console.warn(`ℹ️ Skipping student_answers row update: "${questionAnswerId}" is not a valid UUID.`);
+        return false;
+    }
+
     try {
         const updateData: any = {
             ai_feedback: feedback // Mapping to ai_feedback column as per existing schema usage
@@ -676,6 +698,10 @@ export const saveQuestionFeedback = async (
 
         if (imageUrl) {
             updateData.feedback_image_url = imageUrl;
+        }
+
+        if (marksAwarded !== undefined) {
+            updateData.marks_awarded = marksAwarded;
         }
 
         const { error } = await supabase

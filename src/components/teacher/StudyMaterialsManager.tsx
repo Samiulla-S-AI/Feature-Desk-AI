@@ -10,24 +10,35 @@ import {
     Plus,
     X,
     BookOpen,
-    Sparkles
+    Sparkles,
+    RefreshCw
 } from 'lucide-react';
-import { fileToBase64, analyzePDF } from '../../lib/pdfProcessor';
+import { analyzePDF } from '../../lib/pdfProcessor';
+import { useAuth } from '../../contexts/AuthContext';
+import { cloudinaryService } from '../../lib/cloudinaryService';
+import { firestoreService } from '../../lib/firebaseService';
+import { sendNotification } from '../../lib/notificationService';
+import { getStudentsByClass } from '../../lib/teacherDb';
+import { renderMarkdown } from '../../utils/markdown';
 
 interface StudyMaterial {
     id: string;
     title: string;
-    type: 'pdf' | 'image' | 'document' | 'notes';
+    type: 'pdf' | 'image' | 'document' | 'notes' | 'text';
     subject: string;
     classId: number;
-    fileName: string;
-    fileSize: string;
+    fileName?: string;
+    fileSize?: string;
     uploadedAt: Date;
     tags: string[];
     description?: string;
     base64Data?: string;
+    url?: string;
+    content?: string;
     aiSummary?: string;
     keyTopics?: string[];
+    teacherId?: string;
+    teacherName?: string;
 }
 
 interface StudyMaterialsProps {
@@ -36,6 +47,7 @@ interface StudyMaterialsProps {
 }
 
 export default function StudyMaterialsManager({ classId, subjects }: StudyMaterialsProps) {
+    const { user } = useAuth();
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const [materials, setMaterials] = useState<StudyMaterial[]>([]);
@@ -44,7 +56,9 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
     const [showUploadModal, setShowUploadModal] = useState(false);
     const [selectedMaterial, setSelectedMaterial] = useState<StudyMaterial | null>(null);
     const [loading, setLoading] = useState(false);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
 
     // Upload form state
     const [uploadForm, setUploadForm] = useState({
@@ -53,32 +67,39 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
         targetClass: classId,
         tags: [] as string[],
         description: '',
-        newTag: ''
+        newTag: '',
+        uploadType: 'file', // 'file' or 'text'
+        textContent: ''     // content for text note
     });
     const [uploadedFile, setUploadedFile] = useState<File | null>(null);
     const [filePreview, setFilePreview] = useState<string>('');
 
-    // Load materials from localStorage (in production, use database)
-    useEffect(() => {
-        const saved = localStorage.getItem(`study_materials_${classId}`);
-        if (saved) {
-            try {
-                const parsed = JSON.parse(saved);
-                setMaterials(parsed.map((m: any) => ({
-                    ...m,
-                    uploadedAt: new Date(m.uploadedAt)
-                })));
-            } catch (e) {
-                console.error('Failed to load materials:', e);
-            }
+    // Load materials from Firestore
+    const loadMaterials = async (isSilent = false) => {
+        if (!isSilent) setIsRefreshing(true);
+        try {
+            const fetched = await firestoreService.getSchoolNotesByClass(classId);
+            setMaterials(fetched.map((m: any) => ({
+                ...m,
+                uploadedAt: new Date(m.uploadedAt)
+            })));
+        } catch (e) {
+            console.error('Failed to load study materials:', e);
+        } finally {
+            if (!isSilent) setIsRefreshing(false);
         }
-    }, [classId]);
-
-    // Save materials to localStorage
-    const saveMaterials = (newMaterials: StudyMaterial[]) => {
-        localStorage.setItem(`study_materials_${classId}`, JSON.stringify(newMaterials));
-        setMaterials(newMaterials);
     };
+
+    useEffect(() => {
+        loadMaterials();
+
+        // Auto-refresh every 15 seconds silently
+        const interval = setInterval(() => {
+            loadMaterials(true);
+        }, 15000);
+
+        return () => clearInterval(interval);
+    }, [classId]);
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -103,60 +124,68 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
     };
 
     const handleUpload = async () => {
-        if (!uploadedFile || !uploadForm.title) return;
+        if (uploadForm.uploadType === 'file' && !uploadedFile) return;
+        if (!uploadForm.title) return;
 
         setLoading(true);
         setUploadProgress(10);
 
         try {
-            // Convert file to base64
-            const base64 = await fileToBase64(uploadedFile);
-            setUploadProgress(40);
+            let secureUrl = '';
 
-            let aiSummary = '';
-            let keyTopics: string[] = [];
-
-            // If PDF, get AI analysis
-            if (uploadedFile.type === 'application/pdf') {
-                setUploadProgress(60);
-                try {
-                    // Get summary and topics separately
-                    const summaryResult = await analyzePDF(base64, 'summary');
-                    const topicsResult = await analyzePDF(base64, 'topics');
-
-                    if (summaryResult.success && summaryResult.result) {
-                        aiSummary = summaryResult.result.substring(0, 500); // Limit to 500 chars
-                    }
-                    if (topicsResult.success && topicsResult.result) {
-                        // Parse topics from string response
-                        keyTopics = topicsResult.result.split('\n').filter(t => t.trim()).slice(0, 5);
-                    }
-                } catch (e) {
-                    console.error('AI analysis failed:', e);
-                }
+            if (uploadForm.uploadType === 'file' && uploadedFile) {
+                // Upload directly to Cloudinary
+                setUploadProgress(40);
+                secureUrl = await cloudinaryService.uploadFile(uploadedFile, 'school_notes');
+                setUploadProgress(80);
             }
 
-            setUploadProgress(80);
-
-            const newMaterial: StudyMaterial = {
-                id: Date.now().toString(),
+            const newNoteData: any = {
                 title: uploadForm.title,
-                type: uploadedFile.type.includes('pdf') ? 'pdf' :
-                    uploadedFile.type.startsWith('image/') ? 'image' : 'document',
+                type: uploadForm.uploadType === 'file' && uploadedFile
+                    ? (uploadedFile.type.includes('pdf') ? 'pdf' : uploadedFile.type.startsWith('image/') ? 'image' : 'document')
+                    : 'text',
                 subject: uploadForm.subject,
-                classId: uploadForm.targetClass,
-                fileName: uploadedFile.name,
-                fileSize: formatFileSize(uploadedFile.size),
-                uploadedAt: new Date(),
+                classId: Number(uploadForm.targetClass),
                 tags: uploadForm.tags,
                 description: uploadForm.description,
-                base64Data: base64,
-                aiSummary,
-                keyTopics
+                teacherId: user?.id || 'unknown',
+                teacherName: (user as any)?.teacher_name || 'Teacher'
             };
 
+            if (uploadForm.uploadType === 'file' && uploadedFile) {
+                newNoteData.fileName = uploadedFile.name;
+                newNoteData.fileSize = formatFileSize(uploadedFile.size);
+                newNoteData.url = secureUrl;
+            } else {
+                newNoteData.content = uploadForm.textContent;
+            }
+
+            // Save to Firebase Firestore
+            await firestoreService.saveSchoolNote(newNoteData);
             setUploadProgress(100);
-            saveMaterials([...materials, newMaterial]);
+
+            // Send notifications to students in the class
+            try {
+                const students = await getStudentsByClass(Number(uploadForm.targetClass));
+                const subjectName = getSubjectName(uploadForm.subject);
+                students.forEach(student => {
+                    sendNotification({
+                        student_id: student.id,
+                        title: `New Note: ${uploadForm.title}`,
+                        message: `For ${subjectName}, you received new notes: "${uploadForm.title}"`,
+                        type: 'announcement',
+                        read: false,
+                        urgent: false
+                    });
+                });
+                console.log(`✅ Notifications sent to ${students.length} students`);
+            } catch (err) {
+                console.error('Failed to notify students:', err);
+            }
+
+            // Reload materials list
+            await loadMaterials();
 
             // Reset form
             setShowUploadModal(false);
@@ -168,15 +197,17 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                 targetClass: classId,
                 tags: [],
                 description: '',
-                newTag: ''
+                newTag: '',
+                uploadType: 'file',
+                textContent: ''
             });
         } catch (error) {
             console.error('Upload failed:', error);
             alert('Failed to upload material. Please try again.');
+        } finally {
+            setLoading(false);
+            setUploadProgress(0);
         }
-
-        setLoading(false);
-        setUploadProgress(0);
     };
 
     const handleAddTag = () => {
@@ -196,12 +227,78 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
         }));
     };
 
-    const handleDeleteMaterial = (id: string) => {
+    const handleDeleteMaterial = async (id: string) => {
         if (confirm('Are you sure you want to delete this material?')) {
-            saveMaterials(materials.filter(m => m.id !== id));
-            setSelectedMaterial(null);
+            try {
+                await firestoreService.deleteSchoolNote(id);
+                setMaterials(prev => prev.filter(m => m.id !== id));
+                setSelectedMaterial(null);
+            } catch (e) {
+                console.error('Failed to delete note:', e);
+                alert('Failed to delete material.');
+            }
         }
     };
+
+    const handleRunAIAnalysis = async (material: StudyMaterial) => {
+        if (material.type !== 'pdf' || !material.url) return;
+        
+        setIsAnalyzing(true);
+        try {
+            // 1. Fetch the PDF from Cloudinary URL and convert to Base64
+            const response = await fetch(material.url);
+            const blob = await response.blob();
+            const base64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(blob);
+                reader.onload = () => {
+                    const result = reader.result as string;
+                    resolve(result.split(',')[1]);
+                };
+                reader.onerror = reject;
+            });
+
+            // 2. Call analyzePDF helpers
+            const summaryResult = await analyzePDF(base64, 'summary');
+            const topicsResult = await analyzePDF(base64, 'topics');
+
+            let aiSummary = '';
+            let keyTopics: string[] = [];
+
+            if (summaryResult.success && summaryResult.result) {
+                aiSummary = summaryResult.result.substring(0, 500);
+            }
+            if (topicsResult.success && topicsResult.result) {
+                keyTopics = topicsResult.result.split('\n').filter(t => t.trim()).slice(0, 5);
+            }
+
+            // 3. Update note in Firestore
+            const { doc, updateDoc } = await import('firebase/firestore');
+            const { db } = await import('../../lib/firebase');
+            const noteRef = doc(db, 'school_notes', material.id);
+            await updateDoc(noteRef, {
+                aiSummary,
+                keyTopics
+            });
+
+            // 4. Update local state
+            const updatedMaterial = {
+                ...material,
+                aiSummary,
+                keyTopics
+            };
+            setMaterials(prev => prev.map(m => m.id === material.id ? updatedMaterial : m));
+            setSelectedMaterial(updatedMaterial);
+            alert('AI Analysis completed successfully!');
+        } catch (error) {
+            console.error('Failed to run AI analysis:', error);
+            alert('AI Analysis failed. Please try again.');
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
+
 
     const formatFileSize = (bytes: number): string => {
         if (bytes < 1024) return bytes + ' B';
@@ -245,13 +342,23 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                     <h2 className="text-2xl font-bold text-gray-900">Study Materials</h2>
                     <p className="text-gray-600">Upload and manage study materials for your students</p>
                 </div>
-                <button
-                    onClick={() => setShowUploadModal(true)}
-                    className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-500 text-white rounded-xl hover:shadow-lg transition-all"
-                >
-                    <Plus className="w-5 h-5" />
-                    <span>Upload Material</span>
-                </button>
+                <div className="flex items-center space-x-3">
+                    <button
+                        onClick={() => loadMaterials(false)}
+                        disabled={isRefreshing}
+                        className="p-2 text-gray-600 hover:bg-gray-100 rounded-xl transition-all border border-gray-200 bg-white flex items-center justify-center"
+                        title="Refresh"
+                    >
+                        <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                    </button>
+                    <button
+                        onClick={() => setShowUploadModal(true)}
+                        className="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-500 text-white rounded-xl hover:shadow-lg transition-all"
+                    >
+                        <Plus className="w-5 h-5" />
+                        <span>Upload Material</span>
+                    </button>
+                </div>
             </div>
 
             {/* Filters */}
@@ -356,47 +463,89 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                         </div>
 
                         <div className="p-6 space-y-4">
-                            {/* File Upload Area */}
-                            {!uploadedFile ? (
-                                <div
-                                    onClick={() => fileInputRef.current?.click()}
-                                    className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-purple-400 hover:bg-purple-50/50 transition-all"
+                            {/* Toggle for File Upload vs Text Notes */}
+                            <div className="flex bg-gray-100 p-1 rounded-xl mb-4">
+                                <button
+                                    type="button"
+                                    onClick={() => setUploadForm(prev => ({ ...prev, uploadType: 'file' }))}
+                                    className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
+                                        uploadForm.uploadType === 'file'
+                                            ? 'bg-white text-purple-600 shadow-sm'
+                                            : 'text-gray-500 hover:text-gray-700'
+                                    }`}
                                 >
-                                    <Upload className="w-12 h-12 mx-auto text-gray-400 mb-3" />
-                                    <p className="font-medium text-gray-700">Click to upload or drag & drop</p>
-                                    <p className="text-sm text-gray-500 mt-1">PDF, Images, or Documents (Max 50MB)</p>
-                                </div>
-                            ) : (
-                                <div className="flex items-center space-x-4 p-4 bg-gray-50 rounded-xl">
-                                    {filePreview === 'pdf' ? (
-                                        <FileText className="w-12 h-12 text-red-500" />
-                                    ) : filePreview === 'document' ? (
-                                        <BookOpen className="w-12 h-12 text-purple-500" />
+                                    File Upload
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setUploadForm(prev => ({ ...prev, uploadType: 'text' }))}
+                                    className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${
+                                        uploadForm.uploadType === 'text'
+                                            ? 'bg-white text-purple-600 shadow-sm'
+                                            : 'text-gray-500 hover:text-gray-700'
+                                    }`}
+                                >
+                                    Text Notes
+                                </button>
+                            </div>
+
+                            {uploadForm.uploadType === 'file' ? (
+                                <>
+                                    {/* File Upload Area */}
+                                    {!uploadedFile ? (
+                                        <div
+                                            onClick={() => fileInputRef.current?.click()}
+                                            className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-purple-400 hover:bg-purple-50/50 transition-all"
+                                        >
+                                            <Upload className="w-12 h-12 mx-auto text-gray-400 mb-3" />
+                                            <p className="font-medium text-gray-700">Click to upload or drag & drop</p>
+                                            <p className="text-sm text-gray-500 mt-1">PDF, Images, or Documents (Max 50MB)</p>
+                                        </div>
                                     ) : (
-                                        <img src={filePreview} alt="Preview" className="w-12 h-12 object-cover rounded" />
+                                        <div className="flex items-center space-x-4 p-4 bg-gray-50 rounded-xl">
+                                            {filePreview === 'pdf' ? (
+                                                <FileText className="w-12 h-12 text-red-500" />
+                                            ) : filePreview === 'document' ? (
+                                                <BookOpen className="w-12 h-12 text-purple-500" />
+                                            ) : (
+                                                <img src={filePreview} alt="Preview" className="w-12 h-12 object-cover rounded" />
+                                            )}
+                                            <div className="flex-1">
+                                                <p className="font-medium text-gray-900">{uploadedFile.name}</p>
+                                                <p className="text-sm text-gray-500">{formatFileSize(uploadedFile.size)}</p>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    setUploadedFile(null);
+                                                    setFilePreview('');
+                                                }}
+                                                className="p-2 hover:bg-gray-200 rounded-lg"
+                                            >
+                                                <X className="w-5 h-5" />
+                                            </button>
+                                        </div>
                                     )}
-                                    <div className="flex-1">
-                                        <p className="font-medium text-gray-900">{uploadedFile.name}</p>
-                                        <p className="text-sm text-gray-500">{formatFileSize(uploadedFile.size)}</p>
-                                    </div>
-                                    <button
-                                        onClick={() => {
-                                            setUploadedFile(null);
-                                            setFilePreview('');
-                                        }}
-                                        className="p-2 hover:bg-gray-200 rounded-lg"
-                                    >
-                                        <X className="w-5 h-5" />
-                                    </button>
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.txt"
+                                        onChange={handleFileSelect}
+                                        className="hidden"
+                                    />
+                                </>
+                            ) : (
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Notes Content (Text/Markdown)</label>
+                                    <textarea
+                                        value={uploadForm.textContent}
+                                        onChange={(e) => setUploadForm(prev => ({ ...prev, textContent: e.target.value }))}
+                                        placeholder="Type or paste your notes here..."
+                                        rows={8}
+                                        className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 font-mono text-sm"
+                                    />
                                 </div>
                             )}
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.txt"
-                                onChange={handleFileSelect}
-                                className="hidden"
-                            />
+
 
                             {/* Title */}
                             <div>
@@ -519,7 +668,11 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                             </button>
                             <button
                                 onClick={handleUpload}
-                                disabled={loading || !uploadedFile || !uploadForm.title}
+                                disabled={
+                                    loading || 
+                                    !uploadForm.title.trim() || 
+                                    (uploadForm.uploadType === 'file' ? !uploadedFile : !uploadForm.textContent.trim())
+                                }
                                 className="flex items-center space-x-2 px-6 py-2 bg-gradient-to-r from-purple-600 to-pink-500 text-white rounded-xl hover:shadow-lg disabled:opacity-50 transition-all"
                             >
                                 {loading ? (
@@ -565,26 +718,52 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
 
                         <div className="p-6 space-y-4">
                             {/* File Info */}
-                            <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-xl">
-                                <div>
-                                    <p className="text-xs text-gray-500">File Name</p>
-                                    <p className="font-medium text-gray-900">{selectedMaterial.fileName}</p>
+                            {selectedMaterial.type !== 'text' ? (
+                                <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-xl">
+                                    <div>
+                                        <p className="text-xs text-gray-500">File Name</p>
+                                        <p className="font-medium text-gray-900">{selectedMaterial.fileName}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-500">File Size</p>
+                                        <p className="font-medium text-gray-900">{selectedMaterial.fileSize}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-500">Uploaded</p>
+                                        <p className="font-medium text-gray-900">
+                                            {selectedMaterial.uploadedAt.toLocaleDateString()} at {selectedMaterial.uploadedAt.toLocaleTimeString()}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-500">Type</p>
+                                        <p className="font-medium text-gray-900 capitalize">{selectedMaterial.type}</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-xs text-gray-500">File Size</p>
-                                    <p className="font-medium text-gray-900">{selectedMaterial.fileSize}</p>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-xl">
+                                    <div>
+                                        <p className="text-xs text-gray-500">Uploaded</p>
+                                        <p className="font-medium text-gray-900">
+                                            {selectedMaterial.uploadedAt.toLocaleDateString()} at {selectedMaterial.uploadedAt.toLocaleTimeString()}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-gray-500">Type</p>
+                                        <p className="font-medium text-gray-900 capitalize">Text Notes</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-xs text-gray-500">Uploaded</p>
-                                    <p className="font-medium text-gray-900">
-                                        {selectedMaterial.uploadedAt.toLocaleDateString()} at {selectedMaterial.uploadedAt.toLocaleTimeString()}
-                                    </p>
+                            )}
+
+                            {/* Text content for text notes */}
+                            {selectedMaterial.type === 'text' && selectedMaterial.content && (
+                                <div className="p-4 bg-gray-50 rounded-xl border border-gray-200">
+                                    <p className="text-xs text-gray-500 mb-2">Notes Content</p>
+                                    <div 
+                                        className="text-sm text-gray-800 font-sans leading-relaxed max-h-60 overflow-y-auto"
+                                        dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedMaterial.content) }}
+                                    />
                                 </div>
-                                <div>
-                                    <p className="text-xs text-gray-500">Type</p>
-                                    <p className="font-medium text-gray-900 capitalize">{selectedMaterial.type}</p>
-                                </div>
-                            </div>
+                            )}
 
                             {/* Tags */}
                             {selectedMaterial.tags.length > 0 && (
@@ -609,7 +788,7 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                             )}
 
                             {/* AI Summary */}
-                            {selectedMaterial.aiSummary && (
+                            {selectedMaterial.aiSummary ? (
                                 <div className="p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl">
                                     <div className="flex items-center space-x-2 mb-2">
                                         <Sparkles className="w-5 h-5 text-purple-500" />
@@ -617,7 +796,35 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                                     </div>
                                     <p className="text-gray-700">{selectedMaterial.aiSummary}</p>
                                 </div>
-                            )}
+                            ) : selectedMaterial.type === 'pdf' ? (
+                                <div className="p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl flex items-center justify-between">
+                                    <div className="flex items-start space-x-3">
+                                        <Sparkles className="w-5 h-5 text-purple-500 mt-0.5" />
+                                        <div>
+                                            <p className="text-purple-900 font-bold text-sm">AI Summary Available</p>
+                                            <p className="text-xs text-purple-600">Analyze this document to generate an AI summary and topics.</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => handleRunAIAnalysis(selectedMaterial)}
+                                        disabled={isAnalyzing}
+                                        className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-500 text-white rounded-lg hover:shadow transition-all text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+                                    >
+                                        {isAnalyzing ? (
+                                            <>
+                                                <RefreshCw className="w-3 h-3 animate-spin" />
+                                                <span>Analyzing...</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Sparkles className="w-3 h-3" />
+                                                <span>Run AI Summary</span>
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            ) : null}
+
 
                             {/* Key Topics */}
                             {selectedMaterial.keyTopics && selectedMaterial.keyTopics.length > 0 && (
@@ -649,6 +856,17 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                                 >
                                     Close
                                 </button>
+                                {selectedMaterial.url && (
+                                    <a
+                                        href={selectedMaterial.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-all animate-fade-in"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        <span>View/Download File</span>
+                                    </a>
+                                )}
                                 {selectedMaterial.base64Data && (
                                     <a
                                         href={`data:application/octet-stream;base64,${selectedMaterial.base64Data}`}
@@ -661,6 +879,7 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
                                 )}
                             </div>
                         </div>
+
                     </div>
                 </div>
             )}

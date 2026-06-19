@@ -240,12 +240,6 @@ export const setupAntiCheating = (
         onViolation('right_click', violationCount);
     };
 
-    const handleBlur = async () => {
-        violationCount++;
-        await logProctoringEvent(examId, studentId, 'blur', 'Window lost focus', true);
-        onViolation('blur', violationCount);
-    };
-
     const handleKeydown = (e: KeyboardEvent) => {
         // Block Ctrl+C, Ctrl+V, Ctrl+P, F12, etc.
         if (
@@ -264,7 +258,6 @@ export const setupAntiCheating = (
     document.addEventListener('copy', handleCopy);
     document.addEventListener('paste', handlePaste);
     document.addEventListener('contextmenu', handleContextMenu);
-    window.addEventListener('blur', handleBlur);
     document.addEventListener('keydown', handleKeydown);
 
     // Return cleanup function
@@ -272,7 +265,6 @@ export const setupAntiCheating = (
         document.removeEventListener('copy', handleCopy);
         document.removeEventListener('paste', handlePaste);
         document.removeEventListener('contextmenu', handleContextMenu);
-        window.removeEventListener('blur', handleBlur);
         document.removeEventListener('keydown', handleKeydown);
     };
 };

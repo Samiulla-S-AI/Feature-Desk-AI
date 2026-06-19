@@ -1,6 +1,6 @@
 redirectsOrigin = "config"
 plugins = []
-functionsDirectory = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature_Desk_G\\netlify\\functions"
+functionsDirectory = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature-Desk-AI\\netlify\\functions"
 functionsDirectoryOrigin = "config"
 
 [functions]
@@ -9,12 +9,11 @@ functionsDirectoryOrigin = "config"
 node_bundler = "esbuild"
 
 [build]
-publish = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature_Desk_G\\dist"
+publish = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature-Desk-AI\\dist"
 publishOrigin = "config"
 commandOrigin = "config"
-base = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature_Desk_G"
 command = "npm run build"
-functions = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature_Desk_G\\netlify\\functions"
+functions = "C:\\Users\\samiu\\OneDrive\\Desktop\\Feature-Desk-AI\\netlify\\functions"
 
 [build.environment]
 NODE_VERSION = "18"

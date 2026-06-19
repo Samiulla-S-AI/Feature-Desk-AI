@@ -160,21 +160,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setClassSubject = async (classId: number, subjectCode: string) => {
     if (!user) return;
 
-    try {
-      if (userType === 'student') {
+    // Local state & storage updates should always succeed immediately (including for guest/demo users)
+    const updatedUser = { ...user, current_class: classId, current_subject: subjectCode };
+    setUser(updatedUser);
+    localStorage.setItem('featuredesk_user', JSON.stringify(updatedUser));
+
+    // Sync to Supabase database (skip for demo user id)
+    if (userType === 'student' && user.id !== '10000000-0000-0000-0000-000000000001') {
+      try {
         const { error } = await supabase
           .from('students')
           .update({ current_class: classId, current_subject: subjectCode })
           .eq('id', user.id);
-
-        if (!error) {
-          const updatedUser = { ...user, current_class: classId, current_subject: subjectCode };
-          setUser(updatedUser);
-          localStorage.setItem('featuredesk_user', JSON.stringify(updatedUser));
+        
+        if (error) {
+          console.warn('Supabase sync warning (could be offline or policy restriction):', error.message);
         }
+      } catch (error) {
+        console.error('Error syncing class/subject to database:', error);
       }
-    } catch (error) {
-      console.error('Error updating class/subject:', error);
     }
   };
 

@@ -197,8 +197,22 @@ export default function ExaminationApp() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        // Merge with initial structure to ensure all keys exist
-        setAnswers({ ...initialAnswers, ...parsed });
+        
+        // Handle visibility-change backup format: { answers: {...}, modes: {...}, timestamp: ... }
+        let savedAnswers = parsed;
+        if (parsed.answers && typeof parsed.answers === 'object' && !Array.isArray(parsed.answers)) {
+          savedAnswers = parsed.answers;
+          if (parsed.modes) setAnswerModes(parsed.modes);
+        }
+        
+        // Merge only valid keys
+        const validAnswers = { ...initialAnswers };
+        Object.keys(savedAnswers).forEach(key => {
+            if (key in initialAnswers) {
+                validAnswers[key] = savedAnswers[key];
+            }
+        });
+        setAnswers(validAnswers);
       } catch (e) {
         setAnswers(initialAnswers);
       }
@@ -441,23 +455,17 @@ export default function ExaminationApp() {
     }
   };
 
+  const handleExitExam = () => {
+    if (window.confirm("Are you sure you want to exit the exam? Your current progress will be submitted and graded.")) {
+      handleSubmit();
+    }
+  };
+
   // Handle tab/window visibility changes — also backup answers
   useEffect(() => {
     const handleVisibilityChange = () => {
-      // Only trigger if exam is active, not submitted, and NOT currently submitting (avoids timer race conditions)
+      // Backup answers to localStorage to prevent data loss when tab is hidden (no warning, no auto-submit)
       if (document.hidden && !examSubmitted && !isLocked && !isSubmitting && view === 'exam') {
-        const nextCount = warningCount + 1;
-        setWarningCount(nextCount);
-
-        // Auto-submit on 3rd violation
-        if (nextCount >= 3) {
-          setShowWarning(false); // Ensure warning is hidden
-          handleSubmit(); // Execute standard submit function
-        } else {
-          setShowWarning(true); // Warn for 1st & 2nd violation
-        }
-
-        // Backup answers to localStorage to prevent data loss
         if (currentExam) {
           try {
             const backupData: Record<string, string> = {};
@@ -479,14 +487,12 @@ export default function ExaminationApp() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [examSubmitted, isLocked, view, answers, answerModes, currentExam, warningCount, isSubmitting, handleSubmit]);
+  }, [examSubmitted, isLocked, view, answers, answerModes, currentExam, isSubmitting]);
 
-  // Handle proctoring violation
+  // Handle proctoring violation (logs to database but does not show warnings or auto-submit)
   const handleViolation = useCallback((type: string, count: number) => {
     setViolationCount(count);
-    setShowWarning(true);
-    setWarningCount(prev => prev + 1);
-
+    
     // Log to proctoring session
     if (currentExam && (user as any)?.id) {
       logProctoringEvent(
@@ -496,12 +502,7 @@ export default function ExaminationApp() {
         `Violation #${count}`
       );
     }
-
-    // Auto-submit after 3 violations
-    if (count >= 3 && !examSubmitted) {
-      handleSubmit();
-    }
-  }, [currentExam, user, examSubmitted]);
+  }, [currentExam, user]);
 
   // Initialize proctoring on unlock
   const initializeProctoring = useCallback(async () => {
@@ -1197,10 +1198,10 @@ export default function ExaminationApp() {
 
   // Render main exam interface
   return (
-    <div className="max-w-7xl mx-auto p-6">
+    <div className="max-w-7xl mx-auto p-4 md:p-6 lg:h-[calc(100vh-10px)] lg:flex lg:flex-col overflow-hidden">
       {/* Header with timer and controls */}
-      <div className="bg-white rounded-xl shadow-md p-4 mb-6 sticky top-0 z-10">
-        <div className="flex justify-between items-center">
+      <div className="bg-white rounded-xl shadow-md p-4 mb-6 sticky top-0 z-10 shrink-0">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div className="flex items-center">
             <h1 className="text-xl font-bold">{currentExam?.title}</h1>
             <span className="ml-2 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
@@ -1208,7 +1209,7 @@ export default function ExaminationApp() {
             </span>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
             <div className={`flex items-center gap-1 px-3 py-1 rounded-full ${remainingTime < 300 ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
               }`}>
               <Clock className="w-4 h-4" />
@@ -1218,6 +1219,7 @@ export default function ExaminationApp() {
             <button
               onClick={toggleFullScreen}
               className="p-2 hover:bg-gray-100 rounded-full"
+              title={isFullScreen ? "Minimize" : "Maximize"}
             >
               {isFullScreen ? (
                 <Minimize2 className="w-5 h-5" />
@@ -1227,9 +1229,17 @@ export default function ExaminationApp() {
             </button>
 
             <button
+              onClick={handleExitExam}
+              className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors flex items-center gap-1.5 font-medium text-sm"
+              title="Exit exam and submit current progress"
+            >
+              Exit Exam
+            </button>
+
+            <button
               onClick={handleSubmit}
               disabled={isSubmitting}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 font-medium text-sm"
             >
               {isSubmitting ? 'Submitting...' : 'Submit Exam'}
               <Save className="w-4 h-4" />
@@ -1252,9 +1262,9 @@ export default function ExaminationApp() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 lg:flex-1 lg:overflow-hidden min-h-0">
         {/* Sidebar */}
-        <div className="lg:col-span-1">
+        <div className="lg:col-span-1 lg:overflow-y-auto pr-1 flex flex-col gap-4">
           {renderQuestionNav()}
 
           <div className="bg-white rounded-xl shadow-md p-4">
@@ -1266,10 +1276,12 @@ export default function ExaminationApp() {
         </div>
 
         {/* Main content */}
-        <div className="lg:col-span-3">
-          {renderQuestion()}
+        <div className="lg:col-span-3 lg:overflow-y-auto pr-1 flex flex-col justify-between min-h-0">
+          <div className="flex-1 overflow-y-auto min-h-0 pb-4">
+            {renderQuestion()}
+          </div>
 
-          <div className="flex justify-between">
+          <div className="flex justify-between mt-4 shrink-0">
             <button
               onClick={goToPreviousQuestion}
               disabled={currentQuestionIndex === 0}

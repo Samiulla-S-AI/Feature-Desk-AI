@@ -17,7 +17,8 @@ import {
     Keyboard,
     AlertTriangle,
     ImagePlus,
-    Trash2
+    Trash2,
+    Bell
 } from 'lucide-react';
 import { getPendingResults, getPublishedResults, approveGrade, saveQuestionFeedback, StudentResult } from '../../lib/teacherDb';
 
@@ -102,6 +103,38 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                 return;
             }
 
+            // Fetch overall submission details from exam_submissions for overlaying saved feedback
+            let savedFeedbackArray: any[] = [];
+            try {
+                const { data: submissionData } = await supabase
+                    .from('exam_submissions')
+                    .select('question_feedback, feedback')
+                    .eq('id', resultId)
+                    .single();
+
+                if (submissionData) {
+                    savedFeedbackArray = Array.isArray(submissionData.question_feedback) ? submissionData.question_feedback : [];
+                    if (submissionData.feedback) {
+                        setCustomFeedback(prev => ({ ...prev, [resultId]: submissionData.feedback }));
+                    }
+                } else {
+                    // Check quiz_results fallback
+                    const { data: quizData } = await supabase
+                        .from('quiz_results')
+                        .select('answers, feedback')
+                        .eq('id', resultId)
+                        .single();
+                    if (quizData) {
+                        savedFeedbackArray = Array.isArray(quizData.answers) ? quizData.answers : [];
+                        if (quizData.feedback) {
+                            setCustomFeedback(prev => ({ ...prev, [resultId]: quizData.feedback }));
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn('Could not load overall feedback overlay:', err);
+            }
+
             if (supaAnswers && supaAnswers.length > 0) {
                 // 2. Check for Cloudinary External Reference
                 const firstAnswer = supaAnswers[0]?.student_answer || '';
@@ -113,29 +146,89 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                         const response = await fetch(url);
                         const fullSubmission = await response.json();
 
-                        // Use questions from Cloudinary data for proper question text
-                        if (fullSubmission && fullSubmission.answers) {
+                        if (fullSubmission) {
                             const questions: SubmissionQuestion[] = [];
                             const cloudQuestions = fullSubmission.questions || [];
 
-                            Object.entries(fullSubmission.answers).forEach(([qId, ans]: [string, any]) => {
-                                const meta = supaAnswers.find((sa: any) => sa.question_id == qId);
-                                // Find matching question from Cloudinary data
-                                const cloudQ = cloudQuestions.find((cq: any) => String(cq.id) === String(qId));
+                            // Filter database student_answers to only those with valid question references
+                            const validSupaAnswers = supaAnswers.filter((sa: any) => sa.question_id);
 
-                                questions.push({
-                                    questionId: qId,
-                                    questionText: meta?.assessment_questions?.question_text || cloudQ?.text || `Question ${questions.length + 1}`,
-                                    answer: typeof ans === 'string' ? ans : JSON.stringify(ans),
-                                    marks: meta?.assessment_questions?.marks || cloudQ?.marks || 5,
-                                    allocatedMarks: meta?.marks_awarded ?? 0,
-                                    suggestion: meta?.ai_feedback || '',
-                                    isDrawing: typeof ans === 'string' && ans.includes('[DRAWING]:')
+                            if (validSupaAnswers.length > 0) {
+                                validSupaAnswers.forEach((sa: any, idx: number) => {
+                                    const qId = sa.question_id;
+                                    let rawAns = fullSubmission.answers?.[qId];
+                                    if (rawAns === undefined || rawAns === null) {
+                                        rawAns = sa.student_answer ? sa.student_answer.replace(/\[CLOUDINARY_URL\]:.*?\|\|\|/, '').replace(/\[FIREBASE_URL\]:.*?\|\|\|/, '') : '';
+                                    }
+
+                                    let ansStr = '';
+                                    if (rawAns !== null && rawAns !== undefined) {
+                                        if (typeof rawAns === 'object') {
+                                            const str = JSON.stringify(rawAns);
+                                            ansStr = (str === '{}' || str === '[]') ? '' : str;
+                                        } else {
+                                            ansStr = String(rawAns);
+                                            if (ansStr === '{}' || ansStr === '[]') ansStr = '';
+                                        }
+                                    }
+
+                                    const cloudQ = cloudQuestions.find((cq: any) => String(cq.id) === String(qId));
+                                    
+                                    const savedF = savedFeedbackArray.find((sf: any) => 
+                                        String(sf.questionId) === String(qId) || 
+                                        sf.questionNumber === (idx + 1)
+                                    );
+
+                                    questions.push({
+                                        questionId: qId,
+                                        questionText: sa.assessment_questions?.question_text || cloudQ?.text || `Question`,
+                                        answer: ansStr,
+                                        marks: sa.assessment_questions?.marks || cloudQ?.marks || 5,
+                                        allocatedMarks: savedF?.marksAwarded ?? sa.marks_awarded ?? 0,
+                                        suggestion: savedF?.feedback || sa.ai_feedback || '',
+                                        isDrawing: ansStr.includes('[DRAWING]:'),
+                                        feedbackImageUrl: savedF?.feedbackImage || sa.feedback_image_url
+                                    });
                                 });
-                            });
+                            } else if (cloudQuestions.length > 0) {
+                                cloudQuestions.forEach((cloudQ: any, index: number) => {
+                                    const qId = String(cloudQ.id);
+                                    const rawAns = fullSubmission.answers?.[qId] !== undefined ? fullSubmission.answers[qId] : '';
+                                    const meta = supaAnswers.find((sa: any) => String(sa.question_id) === qId);
 
-                            setSubmissionDetails(prev => ({ ...prev, [resultId]: questions }));
-                            return questions;
+                                    let ansStr = '';
+                                    if (rawAns !== null && rawAns !== undefined) {
+                                        if (typeof rawAns === 'object') {
+                                            const str = JSON.stringify(rawAns);
+                                            ansStr = (str === '{}' || str === '[]') ? '' : str;
+                                        } else {
+                                            ansStr = String(rawAns);
+                                            if (ansStr === '{}' || ansStr === '[]') ansStr = '';
+                                        }
+                                    }
+
+                                    const savedF = savedFeedbackArray.find((sf: any) => 
+                                        String(sf.questionId) === qId || 
+                                        sf.questionNumber === (index + 1)
+                                    );
+
+                                    questions.push({
+                                        questionId: qId,
+                                        questionText: cloudQ.text || 'Question',
+                                        answer: ansStr,
+                                        marks: cloudQ.marks || 5,
+                                        allocatedMarks: savedF?.marksAwarded ?? meta?.marks_awarded ?? 0,
+                                        suggestion: savedF?.feedback || meta?.ai_feedback || '',
+                                        isDrawing: ansStr.includes('[DRAWING]:'),
+                                        feedbackImageUrl: savedF?.feedbackImage || meta?.feedback_image_url
+                                    });
+                                });
+                            }
+
+                            if (questions.length > 0) {
+                                setSubmissionDetails(prev => ({ ...prev, [resultId]: questions }));
+                                return questions;
+                            }
                         }
                     } catch (cloudinaryError) {
                         console.error('Failed to download from Cloudinary:', cloudinaryError);
@@ -143,16 +236,29 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                 }
 
                 // 3. Normal Supabase Mapping
-                const questions: SubmissionQuestion[] = supaAnswers.map((a: any) => ({
-                    questionId: a.question_id || a.id,
-                    questionText: a.assessment_questions?.question_text || 'Question',
-                    answer: a.student_answer ? a.student_answer.replace(/\[CLOUDINARY_URL\]:.*?\|\|\|/, '').replace(/\[FIREBASE_URL\]:.*?\|\|\|/, '') : '',
-                    marks: a.assessment_questions?.marks || 5,
-                    allocatedMarks: a.marks_awarded ?? 0,
-                    suggestion: a.ai_feedback || '',
-                    isDrawing: a.student_answer?.includes('[DRAWING]:') || false,
-                    feedbackImageUrl: a.feedback_image_url
-                }));
+                const questions: SubmissionQuestion[] = supaAnswers.map((a: any, index: number) => {
+                    let ansStr = a.student_answer ? a.student_answer.replace(/\[CLOUDINARY_URL\]:.*?\|\|\|/, '').replace(/\[FIREBASE_URL\]:.*?\|\|\|/, '') : '';
+                    if (ansStr === '{}' || ansStr === '[]') {
+                        ansStr = '';
+                    }
+
+                    const qId = a.question_id || a.id;
+                    const savedF = savedFeedbackArray.find((sf: any) => 
+                        String(sf.questionId) === String(qId) || 
+                        sf.questionNumber === (index + 1)
+                    );
+
+                    return {
+                        questionId: qId,
+                        questionText: a.assessment_questions?.question_text || 'Question',
+                        answer: ansStr,
+                        marks: a.assessment_questions?.marks || 5,
+                        allocatedMarks: savedF?.marksAwarded ?? a.marks_awarded ?? 0,
+                        suggestion: savedF?.feedback || a.ai_feedback || '',
+                        isDrawing: ansStr.includes('[DRAWING]:') || false,
+                        feedbackImageUrl: savedF?.feedbackImage || a.feedback_image_url
+                    };
+                });
 
                 setSubmissionDetails(prev => ({ ...prev, [resultId]: questions }));
                 return questions;
@@ -647,15 +753,52 @@ RULES:
         const feedback = customFeedback[resultId] || '';
         const fullFeedback = feedback;
 
-        const success = await approveGrade(resultId, grade, fullFeedback);
+        const result = pendingResults.find(r => r.id === resultId);
+        const questions = submissionDetails[resultId] || [];
+        
+        // Build question feedback — include AI suggestion OR a default message
+        const aiBreakdown = aiGrading[resultId]?.breakdown || [];
+
+        const questionFeedback: QuestionFeedback[] = questions.map((q, index) => {
+            // 1. Try teacher/saved suggestion
+            let suggestion = q.suggestion;
+
+            // 2. If empty, try to find matching AI feedback from current session
+            if (!suggestion || !suggestion.trim()) {
+                const aiEntry = aiBreakdown[index] || aiBreakdown.find((b: any) =>
+                    b.criteria?.toLowerCase().includes(`q${index + 1}`) ||
+                    b.criteria?.toLowerCase().includes(`question ${index + 1}`)
+                );
+                if (aiEntry) suggestion = aiEntry.feedback;
+            }
+
+            // 3. Last resort: Default message based on score
+            const qFeedback = (suggestion && suggestion.trim())
+                ? suggestion.trim()
+                : (q.allocatedMarks >= q.marks
+                    ? 'Excellent work on this question!'
+                    : q.allocatedMarks >= q.marks * 0.5
+                        ? 'Good attempt. Review the key concepts for improvement.'
+                        : 'This question needs more attention. Please revisit the topic.');
+
+            return {
+                questionNumber: index + 1,
+                questionText: q.questionText || `Question ${index + 1}`,
+                marksAwarded: q.allocatedMarks,
+                totalMarks: q.marks,
+                feedback: qFeedback,
+                feedbackImage: q.feedbackImageUrl || ''
+            };
+        });
+
+        const totalScore = questions.length > 0
+            ? questions.reduce((sum, q) => sum + q.allocatedMarks, 0)
+            : (aiGrading[resultId]?.score ?? result?.score ?? 0);
+
+        const success = await approveGrade(resultId, grade, totalScore, fullFeedback, questionFeedback);
 
         if (success) {
-            // Find the result to get student info for notification
-            const result = pendingResults.find(r => r.id === resultId);
             if (result) {
-                // Build question-wise feedback for the notification
-                const questions = submissionDetails[resultId] || [];
-
                 // SAVE PER-QUESTION FEEDBACK TO SUPABASE AND FIREBASE
                 // This ensures feedback persists in 'student_answers' for the Published tab 
                 // and gets sent to the student correctly.
@@ -664,65 +807,26 @@ RULES:
                         resultId,
                         q.questionId,
                         q.suggestion || '',
-                        q.feedbackImageUrl
+                        q.feedbackImageUrl,
+                        q.allocatedMarks
                     );
                 }
 
-                // Build question feedback — include AI suggestion OR a default message
-                const aiBreakdown = aiGrading[resultId]?.breakdown || [];
-
-                const questionFeedback: QuestionFeedback[] = questions.map((q, index) => {
-                    // 1. Try teacher/saved suggestion
-                    let suggestion = q.suggestion;
-
-                    // 2. If empty, try to find matching AI feedback from current session
-                    if (!suggestion || !suggestion.trim()) {
-                        const aiEntry = aiBreakdown[index] || aiBreakdown.find((b: any) =>
-                            b.criteria?.toLowerCase().includes(`q${index + 1}`) ||
-                            b.criteria?.toLowerCase().includes(`question ${index + 1}`)
-                        );
-                        if (aiEntry) suggestion = aiEntry.feedback;
-                    }
-
-                    // 3. Last resort: Default message based on score
-                    const qFeedback = (suggestion && suggestion.trim())
-                        ? suggestion.trim()
-                        : (q.allocatedMarks >= q.marks
-                            ? 'Excellent work on this question!'
-                            : q.allocatedMarks >= q.marks * 0.5
-                                ? 'Good attempt. Review the key concepts for improvement.'
-                                : 'This question needs more attention. Please revisit the topic.');
-
-                    return {
-                        questionNumber: index + 1,
-                        questionText: q.questionText || `Question ${index + 1}`,
-                        marksAwarded: q.allocatedMarks,
-                        totalMarks: q.marks,
-                        feedback: qFeedback,
-                        feedbackImage: q.feedbackImageUrl
-                    };
-                });
-
-                // Calculate actual score from per-question marks when available
-                const totalScore = questions.length > 0
-                    ? questions.reduce((sum, q) => sum + q.allocatedMarks, 0)
-                    : (aiGrading[resultId]?.score ?? result.score);
-
                 // Get answer sheet URL if available
-                const answerSheetUrl = aiGrading[resultId]?.combinedUrl || combinedSheetPreview[resultId] || undefined;
+                const answerSheetUrl = aiGrading[resultId]?.combinedUrl || combinedSheetPreview[resultId] || null;
 
                 // SAVE TO FIREBASE (Detailed Per-Student Feedback)
                 try {
                     const { firestoreService } = await import('../../lib/firebaseService');
                     await firestoreService.saveStudentFeedback(result.student_id, {
-                        examId: result.assessment_id || result.id,
-                        examTitle: result.quiz_title,
-                        score: totalScore,
-                        totalMarks: result.total_marks,
-                        grade: grade,
-                        teacherFeedback: fullFeedback,
-                        questionBreakdown: questionFeedback,
-                        answerSheetUrl: answerSheetUrl,
+                        examId: result.assessment_id || result.id || '',
+                        examTitle: result.quiz_title || '',
+                        score: totalScore ?? 0,
+                        totalMarks: result.total_marks ?? 0,
+                        grade: grade || '',
+                        teacherFeedback: fullFeedback || '',
+                        questionBreakdown: questionFeedback || [],
+                        answerSheetUrl: answerSheetUrl || '',
                         type: 'exam_feedback'
                     });
                     console.log(`🔥 Detailed feedback saved to Firebase for ${result.student_name}`);
@@ -742,7 +846,7 @@ RULES:
                         grade,
                         fullFeedback,
                         questionFeedback,
-                        answerSheetUrl
+                        answerSheetUrl || undefined
                     );
                     console.log(`✅ Notification sent to student ${result.student_name} for ${result.quiz_title}`);
                     console.log(`📋 Question feedback included: ${questionFeedback.length} questions`);
@@ -1214,7 +1318,7 @@ RULES:
                                                             <div className="flex-1 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col">
                                                                 <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-3">
                                                                     <MessageSquare className="w-4 h-4 text-purple-500" />
-                                                                    Feedback
+                                                                    {activeTab === 'pending' ? 'Feedback' : 'Dispatched Feedback'}
                                                                 </label>
                                                                 {activeTab === 'pending' ? (
                                                                     <textarea
@@ -1226,6 +1330,19 @@ RULES:
                                                                 ) : (
                                                                     <div className="flex-1 w-full bg-slate-50/80 border border-slate-100 rounded-xl p-4 overflow-y-auto custom-scrollbar">
                                                                         <MarkdownRenderer content={question.suggestion || '*No feedback provided*'} />
+                                                                    </div>
+                                                                )}
+
+                                                                {/* Compact Notification Status / Delivery Badge */}
+                                                                {activeTab === 'pending' ? (
+                                                                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2 text-[11px] text-indigo-600 font-semibold bg-indigo-50/40 p-2.5 rounded-lg border border-indigo-100/30">
+                                                                        <Bell className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
+                                                                        <span>Student will receive {question.allocatedMarks} / {question.marks} Marks & this feedback.</span>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2 text-[11px] text-emerald-600 font-semibold bg-emerald-50/40 p-2.5 rounded-lg border border-emerald-100/30">
+                                                                        <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                                                                        <span>Dispatched with {question.allocatedMarks} / {question.marks} Marks.</span>
                                                                     </div>
                                                                 )}
                                                             </div>
@@ -1371,6 +1488,55 @@ RULES:
                                                 </div>
                                             )}
                                         </div>
+
+                                        {/* Notification Dispatched / Delivery Notice */}
+                                        {activeTab === 'pending' ? (
+                                            <div className="mt-6 p-5 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 flex items-start gap-4 shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                                <div className="p-2 bg-white rounded-lg text-indigo-600 shadow-sm">
+                                                    <Bell className="w-5 h-5" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <h6 className="text-sm font-bold text-indigo-900">Automated Notification System</h6>
+                                                    <p className="text-xs text-indigo-700/80 leading-relaxed">
+                                                        Publishing this grade report will automatically dispatch a detailed dashboard notification to <strong>{result.student_name}</strong> containing their overall score ({getTotalAllocatedMarks(result.id)}/{result.total_marks}), grade ({calculateGrade(getTotalAllocatedMarks(result.id), result.total_marks)}), overall comments, and the full question-by-question feedback breakdown.
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="mt-6 p-6 rounded-3xl bg-emerald-50/60 border border-emerald-100/80 space-y-4 shadow-sm animate-in fade-in duration-300">
+                                                <div className="flex items-center gap-2 text-emerald-800 font-bold">
+                                                    <CheckCircle className="w-5 h-5 text-emerald-500" />
+                                                    <span>Student Notification Dispatched Successfully</span>
+                                                </div>
+                                                <p className="text-sm text-slate-600 leading-relaxed">
+                                                    A comprehensive grade report has been delivered to <strong>{result.student_name}</strong>'s dashboard. Here is a summary of what was published:
+                                                </p>
+                                                <div className="bg-white rounded-2xl p-5 border border-emerald-100/50 shadow-sm space-y-3">
+                                                    <div className="flex justify-between items-center pb-2.5 border-b border-slate-100 text-sm">
+                                                        <span className="font-bold text-slate-500">Assessment Title</span>
+                                                        <span className="font-semibold text-slate-900">{result.quiz_title}</span>
+                                                    </div>
+                                                    <div className="flex justify-between items-center pb-2.5 border-b border-slate-100 text-sm">
+                                                        <span className="font-bold text-slate-500">Final Grade</span>
+                                                        <span className="font-black text-emerald-600 text-base">{getTotalAllocatedMarks(result.id)} / {result.total_marks} ({result.grade || calculateGrade(getTotalAllocatedMarks(result.id), result.total_marks)})</span>
+                                                    </div>
+                                                    <div className="space-y-2 pt-2">
+                                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Question-wise Breakdown:</span>
+                                                        <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                                                            {(submissionDetails[result.id] || []).map((q, idx) => (
+                                                                <div key={q.questionId || idx} className="text-xs bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-start justify-between gap-4">
+                                                                    <div className="flex-1">
+                                                                        <span className="font-bold text-slate-700 block mb-0.5">Q{idx + 1}: {q.questionText}</span>
+                                                                        <span className="text-slate-600 italic">"{q.suggestion || 'No question-level feedback provided.'}"</span>
+                                                                    </div>
+                                                                    <span className="font-bold text-slate-900 bg-white px-2 py-1 rounded border border-slate-200/50 whitespace-nowrap">{q.allocatedMarks} / {q.marks} M</span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}

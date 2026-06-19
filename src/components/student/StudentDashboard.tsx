@@ -71,7 +71,7 @@ export default function StudentDashboard() {
     });
 
     return (
-        <div className="min-h-screen flex flex-col bg-slate-50 overflow-y-auto">
+        <div className="h-screen flex flex-col bg-slate-50 overflow-hidden">
             {/* Clean White Header Bar */}
             <header className="bg-white border-b border-slate-200 shadow-sm z-50">
                 <div className="px-5 py-2.5">

@@ -30,7 +30,8 @@ export const saveQuizResultHybrid = async (
                     timestamp: new Date().toISOString(),
                     subject_code: subjectCode || null,
                     class_id: classId || null,
-                    total_questions: quizData.questions?.length || 0
+                    total_questions: quizData.questions?.length || 0,
+                    feedback: detailedLogs.feedback || null
                 }
             ]);
 

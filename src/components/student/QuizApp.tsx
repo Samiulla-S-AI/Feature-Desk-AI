@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, Clock, AlertCircle, CheckCircle, XCircle, Sparkles, Brain, Loader, BookOpen, RefreshCw, Calendar, Award, Play, ChevronRight, HelpCircle, Search, Eye, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { getRandomQuizQuestions, hasUploadedMaterials } from '../../lib/questionDb';
-import { generateAdaptiveQuiz, generateSocraticHints } from '../../lib/gemini';
+import { generateAdaptiveQuiz, generateSocraticHints, generateStudentQuizFeedback } from '../../lib/gemini';
 import { saveQuizResultHybrid } from '../../lib/db';
 import { getStudentContent } from '../../lib/teacherDb';
 import { getAdaptiveQuizRecommendations, completeAdaptiveQuizRecommendation, AdaptiveQuizRecommendation } from '../../lib/adaptiveQuizService';
@@ -54,6 +54,9 @@ export default function QuizApp() {
   const [activeRecommendation, setActiveRecommendation] = useState<AdaptiveQuizRecommendation | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+  const [quizFeedback, setQuizFeedback] = useState<string>('');
+  const [reviewFeedback, setReviewFeedback] = useState<string>('');
+  const [loadingReviewFeedback, setLoadingReviewFeedback] = useState(false);
 
   // Hint State
   const [hints, setHints] = useState<{ level1: string, level2: string, level3: string } | null>(null);
@@ -132,7 +135,7 @@ export default function QuizApp() {
     }
   };
 
-  const saveToLocalHistory = (quizObj: any, finalScore: number) => {
+  const saveToLocalHistory = (quizObj: any, finalScore: number, feedback?: string) => {
     try {
       const historyItem = {
         id: `history_${Date.now()}`,
@@ -141,7 +144,8 @@ export default function QuizApp() {
         score: finalScore,
         total_marks: quizObj.totalMarks,
         timestamp: new Date().toISOString(),
-        subject_code: currentSubject
+        subject_code: currentSubject,
+        feedback: feedback || null
       };
       const current = localStorage.getItem('fd_quiz_history');
       const all = current ? JSON.parse(current) : [];
@@ -150,6 +154,77 @@ export default function QuizApp() {
       setQuizHistory(all);
     } catch (e) {
       console.error('Failed to save history locally:', e);
+    }
+  };
+
+  const handleOpenReview = async (hist: any) => {
+    setReviewQuizItem(hist);
+    if (!hist.feedback) {
+      setLoadingReviewFeedback(true);
+      setReviewFeedback('');
+      try {
+        let rawAnswers: any[] = [];
+        if (hist.answers) {
+          if (Array.isArray(hist.answers)) {
+            rawAnswers = hist.answers;
+          } else if (typeof hist.answers === 'string') {
+            try {
+              rawAnswers = JSON.parse(hist.answers);
+            } catch (e) {}
+          }
+        }
+        
+        // Reconstruct questions and selectedAnswers from rawAnswers
+        const questions = rawAnswers.map((a: any, idx: number) => ({
+          question: a.question || a.questionText || `Question ${idx + 1}`,
+          correct: 0,
+          options: a.options || [a.student_answer || a.studentAnswer, a.correct_answer || a.correctAnswer].filter(Boolean)
+        }));
+        
+        const studentAnswers = rawAnswers.map((a: any) => {
+          const studentAnswerText = a.student_answer || a.studentAnswer || '';
+          const correctText = a.correct_answer || a.correctAnswer || '';
+          return studentAnswerText === correctText ? 0 : 1;
+        });
+
+        // Generate feedback on the fly
+        const feedback = await generateStudentQuizFeedback(
+          hist.quiz_title || 'Practice Quiz',
+          getSubjectDisplayName(hist.subject_code),
+          hist.score,
+          hist.total_marks || 10,
+          questions,
+          studentAnswers
+        );
+        
+        setReviewFeedback(feedback);
+        
+        // Save to database so next time it is there
+        await supabase
+          .from('quiz_results')
+          .update({ feedback })
+          .eq('id', hist.id);
+          
+        // Update local quiz history state so it reflects instantly
+        setQuizHistory(prev => prev.map(item => item.id === hist.id ? { ...item, feedback } : item));
+        
+        // Also update local cache
+        try {
+          const current = localStorage.getItem('fd_quiz_history');
+          if (current) {
+            const all = JSON.parse(current);
+            const updated = all.map((item: any) => item.id === hist.id ? { ...item, feedback } : item);
+            localStorage.setItem('fd_quiz_history', JSON.stringify(updated));
+          }
+        } catch {}
+      } catch (err) {
+        console.error('Failed to generate review feedback on the fly:', err);
+      } finally {
+        setLoadingReviewFeedback(false);
+      }
+    } else {
+      setReviewFeedback(hist.feedback);
+      setLoadingReviewFeedback(false);
     }
   };
 
@@ -252,6 +327,7 @@ export default function QuizApp() {
       setQuizCompleted(false);
       setShowResults(false);
       setScore(0);
+      setQuizFeedback('');
     } catch (error) {
       console.error('Failed to generate quiz:', error);
       setNoContentMessage('Failed to load quiz. Please check your connection and try again.');
@@ -310,6 +386,7 @@ export default function QuizApp() {
         setQuizCompleted(false);
         setShowResults(false);
         setScore(0);
+        setQuizFeedback('');
       } else {
         throw new Error('AI returned empty quiz for weak concepts');
       }
@@ -395,6 +472,7 @@ export default function QuizApp() {
         setQuizCompleted(false);
         setShowResults(false);
         setScore(0);
+        setQuizFeedback('');
       } else {
         // This shouldn't happen now since gemini.ts has fallback
         console.warn('⚠️ AI returned empty quiz, using fallback');
@@ -540,6 +618,9 @@ export default function QuizApp() {
           };
         });
 
+        // Calculate final score
+        const finalScore = score + (selectedAnswers[currentQuestionIndex] === quiz!.questions[currentQuestionIndex].correct ? (quiz!.totalMarks / quiz!.questions.length) : 0);
+
         // Prepare detailed logs
         const detailedLogs = {
           answers: selectedAnswers,
@@ -550,9 +631,7 @@ export default function QuizApp() {
           structuredAnswers
         };
 
-        // Calculate final score
-        const finalScore = score + (selectedAnswers[currentQuestionIndex] === quiz!.questions[currentQuestionIndex].correct ? (quiz!.totalMarks / quiz!.questions.length) : 0);
-
+        // Save immediately with placeholder or empty feedback
         saveQuizResultHybrid(
           (user as any).id || 'student_123',
           quiz!,
@@ -561,9 +640,42 @@ export default function QuizApp() {
           currentSubject,
           currentClass
         );
-
         saveToLocalHistory(quiz!, finalScore);
         fetchQuizHistory();
+
+        // Generate AI feedback in background
+        setQuizFeedback('Analyzing performance and generating feedback...');
+        generateStudentQuizFeedback(
+          quiz!.title,
+          subjectName,
+          finalScore,
+          quiz!.totalMarks,
+          quiz!.questions,
+          selectedAnswers
+        ).then(async (aiFeedback) => {
+          setQuizFeedback(aiFeedback);
+          
+          // Save again with feedback included
+          const detailedLogsWithFeedback = {
+            ...detailedLogs,
+            feedback: aiFeedback
+          };
+          
+          await saveQuizResultHybrid(
+            (user as any).id || 'student_123',
+            quiz!,
+            finalScore,
+            detailedLogsWithFeedback,
+            currentSubject,
+            currentClass
+          );
+          
+          saveToLocalHistory(quiz!, finalScore, aiFeedback);
+          fetchQuizHistory();
+        }).catch((err) => {
+          console.error('Error generating feedback:', err);
+          setQuizFeedback('Review your answers below to identify areas of improvement.');
+        });
 
         if (activeRecommendation) {
           try {
@@ -931,7 +1043,7 @@ export default function QuizApp() {
                     {filteredHistory.map((hist) => (
                       <div
                         key={hist.id}
-                        onClick={() => setReviewQuizItem(hist)}
+                        onClick={() => handleOpenReview(hist)}
                         className="bg-slate-900/50 border border-slate-850 rounded-2xl p-4 flex items-center justify-between gap-4 hover:border-purple-500/40 hover:shadow-lg transition-all cursor-pointer group"
                       >
                         <div className="space-y-1">
@@ -962,7 +1074,7 @@ export default function QuizApp() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setReviewQuizItem(hist);
+                                handleOpenReview(hist);
                               }}
                               className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-purple-400 transition-all"
                               title="Review Quiz"
@@ -1138,15 +1250,22 @@ export default function QuizApp() {
                   </div>
 
                   {/* General Teacher/AI Feedback */}
-                  {hist.feedback && (
+                  {(reviewFeedback || loadingReviewFeedback) && (
                     <div className="bg-purple-950/20 border border-purple-500/20 rounded-2xl p-4">
                       <h4 className="font-bold text-xs text-purple-300 uppercase tracking-wider mb-1 flex items-center gap-1.5">
                         <Sparkles className="w-4 h-4 text-purple-400" />
-                        Teacher Feedback
+                        Learning Feedback
                       </h4>
-                      <p className="text-sm text-purple-200/90 italic leading-relaxed">
-                        "{hist.feedback}"
-                      </p>
+                      {loadingReviewFeedback ? (
+                        <div className="flex items-center gap-2 text-sm text-purple-300 py-1">
+                          <Loader className="w-4 h-4 animate-spin text-purple-400" />
+                          <span>Generating AI learning insights...</span>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-purple-200/90 italic leading-relaxed whitespace-pre-line">
+                          "{reviewFeedback}"
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -1323,6 +1442,26 @@ export default function QuizApp() {
             <p className="text-3xl font-bold text-purple-800">{avgReactionTime}s</p>
           </div>
         </div>
+
+        {/* AI Learning Feedback */}
+        {quizFeedback && (
+          <div className="bg-purple-50 border border-purple-200 rounded-xl p-5 mb-8">
+            <h3 className="font-bold text-purple-800 text-sm mb-2 flex items-center gap-1.5">
+              <Sparkles className="w-5 h-5 text-purple-600" />
+              AI Learning Feedback
+            </h3>
+            {quizFeedback.includes('Analyzing') || quizFeedback.includes('Generating') ? (
+              <div className="flex items-center gap-2 text-sm text-purple-700">
+                <Loader className="w-4 h-4 animate-spin" />
+                <span>{quizFeedback}</span>
+              </div>
+            ) : (
+              <p className="text-sm text-purple-950 leading-relaxed italic">
+                "{quizFeedback}"
+              </p>
+            )}
+          </div>
+        )}
 
         <h2 className="text-xl font-semibold mb-4">Question Analysis</h2>
         <div className="space-y-4 mb-8">

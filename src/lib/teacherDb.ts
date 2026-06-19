@@ -275,13 +275,14 @@ export const getStudentExams = async (classId: number, subjectCode?: string, stu
         if (studentId) {
             const { data: submissions } = await supabase
                 .from('exam_submissions')
-                .select('assessment_id, total_score, grade')
+                .select('assessment_id, total_score, grade, status')
                 .eq('student_id', studentId);
 
             if (submissions) {
                 submissions.forEach(sub => {
                     submittedExamIds.add(sub.assessment_id);
-                    if (sub.total_score !== undefined) {
+                    // Only attach score/grade if the teacher has graded and published it (status === 'graded')
+                    if (sub.status === 'graded' && sub.total_score !== undefined) {
                         examScores.set(sub.assessment_id, {
                             score: sub.total_score,
                             grade: sub.grade

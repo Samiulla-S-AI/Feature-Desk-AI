@@ -255,7 +255,16 @@ export const generateAdaptiveQuiz = async (
     ${weakConceptsInstruction}
     ${contentInstruction}
     
-    Create 5 multiple choice questions with:
+    CRITICAL INSTRUCTION - DYNAMIC QUESTION COUNT:
+    Choose the number of questions (N) to generate dynamically based on the number and complexity of the weak concepts listed (if any).
+    - You must choose a value for N between 1 and 40 based on the student's need.
+    - If there are NO weak concepts, generate between 3 and 10 questions.
+    - If there are weak concepts, generate more questions (e.g. 3 to 8 questions per weak concept) to thoroughly test and reinforce their learning on those weak concepts, but you MUST NOT exceed 40 questions under any circumstances (range N must be 1 to 40).
+    - Generate EXACTLY the number of questions (N) you decide.
+    - Set the "totalMarks" field in the JSON response to exactly N * 5 (5 marks per question).
+    - Set the "timeLimit" field in the JSON response to exactly N * 60 (60 seconds per question).
+    
+    Create multiple choice questions with:
     - Clear, educational questions appropriate for school students
     - 4 options each (A, B, C, D format)
     - Correct answer as index (0 for A, 1 for B, 2 for C, 3 for D)
@@ -279,8 +288,8 @@ export const generateAdaptiveQuiz = async (
           "timeEstimate": 60
         }
       ],
-      "totalMarks": 25,
-      "timeLimit": 300
+      "totalMarks": 25, // REPLACE this with N * 5 based on chosen N
+      "timeLimit": 300 // REPLACE this with N * 60 based on chosen N
     }
     `;
 
@@ -477,7 +486,7 @@ export const generateConceptExplanation = async (
     
     Be encouraging but educational. Return ONLY the explanation text.
     `;
-
+  
     const text = await callWithFallback(async (model) => {
       const result = await model.generateContent(prompt);
       const response = await result.response;
@@ -498,7 +507,16 @@ export const generateReinforcementQuiz = async (
 ): Promise<any> => {
   try {
     const prompt = `
-    Generate 3-5 reinforcement questions targeting these weak areas.
+    Generate reinforcement questions targeting these weak areas.
+    
+    CRITICAL INSTRUCTION - DYNAMIC QUESTION COUNT:
+    Choose the number of questions (N) to generate dynamically based on the number and complexity of the weak concepts listed (if any).
+    - You must choose a value for N between 1 and 40 based on the student's need.
+    - If there are NO weak concepts, generate between 3 and 10 questions.
+    - If there are weak concepts, generate more questions (e.g. 3 to 8 questions per weak concept) to thoroughly test the student on those weak concepts, but you MUST NOT exceed 40 questions under any circumstances (range N must be 1 to 40).
+    - Generate EXACTLY the number of questions (N) you decide.
+    - Set the "totalMarks" field in the JSON response to exactly N * 5 (5 marks per question).
+    - Set the "timeLimit" field in the JSON response to exactly N * 60 (60 seconds per question).
     
     WEAK TOPICS: ${weakTopics.join(', ')}
     SUBJECT: ${subject}
@@ -523,8 +541,8 @@ export const generateReinforcementQuiz = async (
           "targetedConcept": "The weak topic this targets"
         }
       ],
-      "totalMarks": 15,
-      "timeLimit": 180
+      "totalMarks": 15, // REPLACE this with N * 5 based on chosen N
+      "timeLimit": 180 // REPLACE this with N * 60 based on chosen N
     }
     `;
 
@@ -620,5 +638,58 @@ export const generateWeeklyNarrative = async (
   } catch (error) {
     console.error('Error generating narrative:', error);
     return 'Keep up the great work this week! Every step forward is progress.';
+  }
+};
+
+// Generate highly motivating, personalized feedback for a student's quiz attempt
+export const generateStudentQuizFeedback = async (
+  quizTitle: string,
+  subject: string,
+  score: number,
+  totalMarks: number,
+  questions: any[],
+  studentAnswers: number[]
+): Promise<string> => {
+  try {
+    const questionsSummary = questions.map((q, idx) => {
+      const isCorrect = studentAnswers[idx] === q.correct;
+      return `- Question: "${q.question}" | Result: ${isCorrect ? 'Correct' : 'Incorrect'} | Concept: ${q.targetedConcept || q.question}`;
+    }).join('\n');
+
+    const prompt = `
+    You are an encouraging AI study buddy. A student has just completed a quiz and needs learning feedback.
+    
+    QUIZ: ${quizTitle}
+    SUBJECT: ${subject}
+    SCORE: ${Math.round(score)} out of ${totalMarks}
+    
+    DETAILS OF RESULTS:
+    ${questionsSummary}
+    
+    Provide a highly encouraging, personalized feedback message (1-2 short paragraphs, max 150 words) that:
+    1. Celebrates their correct answers and what they did well.
+    2. Identifies areas where they got questions wrong, gently highlighting the topics or concepts they need to review.
+    3. Provides a clear, actionable study tip or recommendation for improvement.
+    
+    Keep the tone friendly, positive, and motivating. Return ONLY the feedback text. Do NOT include markdown code blocks, JSON, or greeting placeholders.
+    `;
+
+    const text = await callWithFallback(async (model) => {
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      return response.text();
+    }, 'gemini-2.5-flash');
+
+    return text.trim();
+  } catch (error) {
+    console.error('Error generating student quiz feedback:', error);
+    const percentage = Math.round((score / totalMarks) * 100);
+    if (percentage >= 80) {
+      return `Fantastic job on the ${quizTitle}! You scored ${Math.round(score)}/${totalMarks} (${percentage}%) and showed a strong understanding of ${subject}. Keep up the excellent work!`;
+    } else if (percentage >= 50) {
+      return `Good effort on the ${quizTitle}! You scored ${Math.round(score)}/${totalMarks} (${percentage}%). You have a solid foundation, but there are a few areas you can improve. Review the questions you missed and try again to get a higher score!`;
+    } else {
+      return `Nice try on the ${quizTitle}! You scored ${Math.round(score)}/${totalMarks} (${percentage}%). Don't worry—quizzes are a great way to learn. Review the explanations for the questions you got wrong, focus on those weak areas, and try another quiz to build your confidence!`;
+    }
   }
 };

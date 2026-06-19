@@ -83,6 +83,14 @@ export default function StudentMonitoringPanel({ examId }: { examId?: string }) 
         status is shared with your teacher. You can turn it off anytime.
       </p>
 
+      <div className="mt-3 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
+        In the Monitoring Agent app, enter this exact <strong>Student ID</strong> so your
+        data links to your account:
+        <code className="ml-1 select-all rounded bg-white px-1.5 py-0.5 font-mono text-indigo-900">
+          {studentId}
+        </code>
+      </div>
+
       <button
         disabled={busy}
         onClick={() => toggle(!enabled)}

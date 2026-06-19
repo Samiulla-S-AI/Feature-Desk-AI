@@ -8,7 +8,14 @@ import { cloudinaryService } from './cloudinaryService';
 // 1. Save Quiz Result
 // Result/Marks -> Supabase (PostgreSQL)
 // Detailed Answers -> Supabase JSONB column
-export const saveQuizResultHybrid = async (userId: string, quizData: any, score: number, detailedLogs: any) => {
+export const saveQuizResultHybrid = async (
+    userId: string,
+    quizData: any,
+    score: number,
+    detailedLogs: any,
+    subjectCode?: string,
+    classId?: number
+) => {
     try {
         // Save structured data to Supabase
         const { error } = await supabase
@@ -19,8 +26,11 @@ export const saveQuizResultHybrid = async (userId: string, quizData: any, score:
                     quiz_title: quizData.title,
                     score: score,
                     total_marks: quizData.totalMarks,
-                    answers: detailedLogs.answers || {},
-                    timestamp: new Date().toISOString()
+                    answers: detailedLogs.structuredAnswers || detailedLogs.answers || {},
+                    timestamp: new Date().toISOString(),
+                    subject_code: subjectCode || null,
+                    class_id: classId || null,
+                    total_questions: quizData.questions?.length || 0
                 }
             ]);
 

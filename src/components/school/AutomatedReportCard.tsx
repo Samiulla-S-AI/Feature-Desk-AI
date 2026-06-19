@@ -146,7 +146,7 @@ export default function AutomatedReportCard({
                     },
                     {
                         subject: 'Science',
-                        subject_code: 'SCI',
+                        subject_code: 'SCIENCE',
                         unit_test_1: 78,
                         unit_test_2: 82,
                         half_yearly: 75,
@@ -160,7 +160,7 @@ export default function AutomatedReportCard({
                     },
                     {
                         subject: 'English',
-                        subject_code: 'ENG',
+                        subject_code: 'ENGLISH',
                         unit_test_1: 92,
                         unit_test_2: 94,
                         half_yearly: 88,
@@ -174,7 +174,7 @@ export default function AutomatedReportCard({
                     },
                     {
                         subject: 'Hindi',
-                        subject_code: 'HIN',
+                        subject_code: 'HINDI',
                         unit_test_1: 88,
                         unit_test_2: 85,
                         half_yearly: 82,
@@ -188,7 +188,7 @@ export default function AutomatedReportCard({
                     },
                     {
                         subject: 'Social Studies',
-                        subject_code: 'SOC',
+                        subject_code: 'SOCIAL',
                         unit_test_1: 75,
                         unit_test_2: 78,
                         half_yearly: 72,

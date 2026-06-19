@@ -223,6 +223,17 @@ export const dismissNotification = (notificationId: string): void => {
         });
 };
 
+export const getSubjectName = (subjectCode?: string): string => {
+    if (!subjectCode) return '';
+    const code = subjectCode.toUpperCase();
+    if (code === 'MATH') return 'Mathematics';
+    if (code === 'SCI') return 'Science';
+    if (code === 'ENG') return 'English';
+    if (code === 'HIST') return 'History';
+    if (code === 'PHY') return 'Physics';
+    return subjectCode;
+};
+
 /**
  * Send a full grade report notification to a student
  * This is called by the GradingCenter when teacher approves & publishes grades
@@ -236,13 +247,28 @@ export const sendGradeReportNotification = (
     grade: string,
     feedback: string,
     questionFeedback: QuestionFeedback[],
-    answerSheetUrl?: string
+    answerSheetUrl?: string,
+    weakConcepts?: string[],
+    subjectCode?: string
 ): StudentNotification => {
     // Build detailed message with question-wise breakdown
     const percentage = Math.round((score / totalMarks) * 100);
+    const subName = getSubjectName(subjectCode);
+    const subjectPrefix = subName ? `${subName}: ` : '';
+    const subjectTitlePrefix = subName ? `Grade Published [${subName}]: ` : 'Grade Published: ';
 
-    let message = `📊 Grade Report for "${assessmentTitle}"\n\n`;
+    let message = `📊 Grade Report for ${subjectPrefix}"${assessmentTitle}"\n\n`;
     message += `📋 Overall Score: ${score}/${totalMarks} (${percentage}%) — Grade: ${grade}\n\n`;
+
+    if (weakConcepts && weakConcepts.length > 0) {
+        message += `🎯 Adaptive Reinforcement Recommended:\n`;
+        message += `Based on your results for ${subName || 'this subject'}, you need to attend a Reinforcement Quiz on the following topics:\n`;
+        weakConcepts.forEach(wc => {
+            message += `  • ${wc}\n`;
+        });
+        message += `Please open the Quiz App and navigate to the "Adaptive Reinforce" or "Standard Practice" tab to complete these tests.\n\n`;
+        message += `${'─'.repeat(40)}\n\n`;
+    }
 
     if (questionFeedback.length > 0) {
         message += `📝 Question-wise Breakdown:\n`;
@@ -265,11 +291,11 @@ export const sendGradeReportNotification = (
 
     return sendNotification({
         student_id: studentId,
-        title: `📊 Grade Published: ${assessmentTitle} — ${grade} (${score}/${totalMarks})`,
+        title: `📊 ${subjectTitlePrefix}${assessmentTitle} — ${grade} (${score}/${totalMarks})`,
         message,
         type: 'grade_report',
         read: false,
-        urgent: percentage < 40, // Mark urgent if failing
+        urgent: percentage < 45, // Mark urgent if failing/low score
         metadata: {
             assessment_title: assessmentTitle,
             score,

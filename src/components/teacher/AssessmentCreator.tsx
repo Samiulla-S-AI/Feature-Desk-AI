@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { generateQuestionsFromPDF, extractQuestionsFromImage, classifyQuestionDifficulty, generateImageForQuestion, analyzeImageNecessity } from '../../lib/teacherAI';
 import { chatWithPDF, fileToBase64, generateQuestionsFromPDFDirect } from '../../lib/pdfProcessor';
-import { createAssessment } from '../../lib/teacherDb';
+import { createAssessment, updateAssessment } from '../../lib/teacherDb';
 import { useAuth } from '../../contexts/AuthContext';
 import MarkdownRenderer from '../common/MarkdownRenderer';
 
@@ -47,24 +47,49 @@ interface AssessmentCreatorProps {
     subjectCode: string;
     classId: number;
     availableSubjects?: string[];
+    assessmentToEdit?: any;
     onClose: () => void;
 }
 
-export default function AssessmentCreator({ subjectCode, classId, availableSubjects, onClose }: AssessmentCreatorProps) {
+export default function AssessmentCreator({ subjectCode, classId, availableSubjects, assessmentToEdit, onClose }: AssessmentCreatorProps) {
     const { user } = useAuth();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
 
     // Selected subject state
-    const [selectedSubject, setSelectedSubject] = useState(subjectCode);
+    const [selectedSubject, setSelectedSubject] = useState(assessmentToEdit?.subject_code || subjectCode);
 
-    const [step, setStep] = useState<'upload' | 'chat' | 'configure' | 'review' | 'examType' | 'schedule'>('upload');
+    const [step, setStep] = useState<'upload' | 'chat' | 'configure' | 'review' | 'examType' | 'schedule'>(
+        assessmentToEdit ? 'review' : 'upload'
+    );
     const [loading, setLoading] = useState(false);
     const [uploadedContent, setUploadedContent] = useState<string>('');
-    const [questions, setQuestions] = useState<Question[]>([]);
-    const [assessmentTitle, setAssessmentTitle] = useState('');
-    const [timeLimit, setTimeLimit] = useState(30);
-    const [scheduledDate, setScheduledDate] = useState('');
+    const [questions, setQuestions] = useState<Question[]>(() => {
+        if (assessmentToEdit?.questions) {
+            return assessmentToEdit.questions.map((q: any) => ({
+                ...q,
+                status: q.status || 'accepted'
+            }));
+        }
+        return [];
+    });
+    const [assessmentTitle, setAssessmentTitle] = useState(assessmentToEdit?.title || '');
+    const [timeLimit, setTimeLimit] = useState(() => {
+        if (assessmentToEdit?.time_limit) {
+            return Math.floor(assessmentToEdit.time_limit / 60);
+        }
+        return 30;
+    });
+    const [scheduledDate, setScheduledDate] = useState(() => {
+        if (assessmentToEdit?.scheduled_at) {
+            try {
+                return new Date(assessmentToEdit.scheduled_at).toISOString().slice(0, 16);
+            } catch (e) {
+                return '';
+            }
+        }
+        return '';
+    });
     const [editingQuestion, setEditingQuestion] = useState<number | null>(null);
 
     // Chat state
@@ -78,19 +103,22 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
     const [config, setConfig] = useState({
         mcqCount: 5,
         twoMarkCount: 3,
-        fiveMarkCount: 2
+        fiveMarkCount: 2,
+        difficulty: 'mixed' as 'easy' | 'medium' | 'hard' | 'mixed'
     });
 
     // Exam type configuration
-    const [examType, setExamType] = useState<'annual' | 'mid_term' | 'unit_test' | 'weekly' | 'practice' | 'quiz'>('unit_test');
+    const [examType, setExamType] = useState<'annual' | 'mid_term' | 'unit_test' | 'weekly' | 'practice' | 'quiz'>(
+        assessmentToEdit?.exam_type || 'unit_test'
+    );
     const [examConfig, setExamConfig] = useState({
-        passingMarks: 40,
-        negativeMarking: false,
-        shuffleQuestions: true,
-        showResults: true,
-        allowReview: true,
-        instructions: '',
-        examPassword: '' // 4-digit password for formal exams
+        passingMarks: assessmentToEdit?.passing_marks ?? 40,
+        negativeMarking: assessmentToEdit?.negative_marking || false,
+        shuffleQuestions: assessmentToEdit?.shuffle_questions !== false,
+        showResults: assessmentToEdit?.show_results !== false,
+        allowReview: assessmentToEdit?.allow_review !== false,
+        instructions: assessmentToEdit?.instructions || '',
+        examPassword: assessmentToEdit?.exam_password || '' // 4-digit password for formal exams
     });
 
     const handlePDFUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -224,7 +252,8 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                     subject: subjectCode,
                     mcqCount: config.mcqCount,
                     shortAnswerCount: config.twoMarkCount,
-                    longAnswerCount: config.fiveMarkCount
+                    longAnswerCount: config.fiveMarkCount,
+                    difficulty: config.difficulty
                 });
 
                 if (result.success && result.questions) {
@@ -332,7 +361,7 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
             return;
         }
 
-        const result = await createAssessment({
+        const assessmentData = {
             title: assessmentTitle,
             subject_code: selectedSubject,
             class_id: classId,
@@ -350,23 +379,30 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
             total_marks: totalMarks,
             time_limit: timeLimit * 60, // Convert to seconds
             scheduled_at: scheduledDate || undefined,
-            is_active: !scheduledDate, // Active immediately if not scheduled
-            created_by: user?.id || '',
+            is_active: assessmentToEdit ? assessmentToEdit.is_active : !scheduledDate, // Keep active status if editing
+            created_by: assessmentToEdit ? assessmentToEdit.created_by : (user?.id || ''),
             exam_type: examType,
             passing_marks: examConfig.passingMarks,
             negative_marking: examConfig.negativeMarking,
             shuffle_questions: examConfig.shuffleQuestions,
             instructions: examConfig.instructions || undefined,
             exam_password: (examType === 'annual' || examType === 'mid_term') ? examConfig.examPassword : undefined
-        });
+        };
+
+        let result;
+        if (assessmentToEdit) {
+            result = await updateAssessment(assessmentToEdit.id, assessmentData);
+        } else {
+            result = await createAssessment(assessmentData);
+        }
 
         setLoading(false);
 
         if (result.success) {
-            alert('Assessment created successfully!');
+            alert(assessmentToEdit ? 'Assessment updated successfully!' : 'Assessment created successfully!');
             onClose();
         } else {
-            alert('Failed to create assessment');
+            alert(assessmentToEdit ? 'Failed to update assessment' : 'Failed to create assessment');
         }
     };
 
@@ -436,7 +472,7 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                 {/* Header */}
                 <div className="p-6 border-b flex items-center justify-between">
                     <div>
-                        <h2 className="text-xl font-bold text-gray-900">Create Assessment</h2>
+                        <h2 className="text-xl font-bold text-gray-900">{assessmentToEdit ? 'Edit Assessment' : 'Create Assessment'}</h2>
                         <div className="flex items-center gap-2 mt-1">
                             {availableSubjects && availableSubjects.length > 1 ? (
                                 <select
@@ -682,6 +718,28 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                                                 onChange={(e) => setConfig(prev => ({ ...prev, fiveMarkCount: parseInt(e.target.value) }))}
                                                 className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                             />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Difficulty Level
+                                            </label>
+                                            <div className="grid grid-cols-4 gap-2">
+                                                {(['easy', 'medium', 'hard', 'mixed'] as const).map((level) => (
+                                                    <button
+                                                        key={level}
+                                                        type="button"
+                                                        onClick={() => setConfig(prev => ({ ...prev, difficulty: level }))}
+                                                        className={`py-2 px-3 text-sm font-medium rounded-xl border capitalize transition-all ${
+                                                            config.difficulty === level
+                                                                ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                                                                : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                                                        }`}
+                                                    >
+                                                        {level}
+                                                    </button>
+                                                ))}
+                                            </div>
                                         </div>
 
                                         <div className="bg-blue-50 p-4 rounded-xl">
@@ -1153,7 +1211,7 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                                         className="w-full py-3 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-xl font-medium hover:opacity-90 transition-opacity flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                         <Save className="w-5 h-5" />
-                                        <span>Create Assessment</span>
+                                        <span>{assessmentToEdit ? 'Save Changes' : 'Create Assessment'}</span>
                                     </button>
                                 </div>
                             )}

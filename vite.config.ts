@@ -82,6 +82,9 @@ export default defineConfig({
             purpose: 'maskable'
           }
         ]
+      },
+      workbox: {
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024 // 5 MiB
       }
     }),
     // Custom plugin to serve /lab folder as static files for PhET simulations

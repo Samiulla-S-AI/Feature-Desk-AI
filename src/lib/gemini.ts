@@ -223,11 +223,37 @@ export const convertHandwritingToText = async (imageData: string): Promise<strin
 };
 
 // Generate adaptive quiz using Gemini 2.0 Flash
-export const generateAdaptiveQuiz = async (subject: string, difficulty: string, topics: string[]): Promise<any> => {
+export const generateAdaptiveQuiz = async (
+  subject: string,
+  difficulty: string,
+  topics: string[],
+  content?: string,
+  weakConcepts?: string[]
+): Promise<any> => {
   try {
+    const contentInstruction = content
+      ? `
+    CRITICAL CONSTRAINT: You MUST generate the questions STRICTLY and ONLY from the following source text. Do NOT use any general external knowledge for question generation. If there is insufficient information in the text to cover all topics, prioritize the content available in the text.
+    
+    SOURCE TEXT:
+    """
+    ${content}
+    """
+    `
+      : '';
+
+    const weakConceptsInstruction = weakConcepts && weakConcepts.length > 0
+      ? `
+    CRITICAL OBJECTIVE: This is a REINFORCEMENT quiz. The student previously made mistakes on the following concepts/questions. You MUST generate questions that specifically focus on teaching, testing, and reinforcing these weak areas:
+    ${weakConcepts.map((wc, i) => `${i + 1}. ${wc}`).join('\n')}
+    `
+      : '';
+
     const prompt = `
     Generate an adaptive quiz for ${subject} with ${difficulty} difficulty level.
     Topics to cover: ${topics.join(', ')}
+    ${weakConceptsInstruction}
+    ${contentInstruction}
     
     Create 5 multiple choice questions with:
     - Clear, educational questions appropriate for school students
@@ -235,6 +261,7 @@ export const generateAdaptiveQuiz = async (subject: string, difficulty: string, 
     - Correct answer as index (0 for A, 1 for B, 2 for C, 3 for D)
     - Brief explanation for why the answer is correct
     - Estimated time per question in seconds
+    - Explicit difficulty rating matching the target difficulty level ("${difficulty}")
     
     IMPORTANT: Return ONLY valid JSON, no markdown code blocks or extra text.
     
@@ -248,6 +275,7 @@ export const generateAdaptiveQuiz = async (subject: string, difficulty: string, 
           "options": ["A) First option", "B) Second option", "C) Third option", "D) Fourth option"],
           "correct": 0,
           "explanation": "Explanation of why this is correct",
+          "difficulty": "${difficulty}",
           "timeEstimate": 60
         }
       ],
@@ -260,7 +288,7 @@ export const generateAdaptiveQuiz = async (subject: string, difficulty: string, 
       const result = await model.generateContent(prompt);
       const response = await result.response;
       return response.text();
-    }, 'gemini-2.0-flash');
+    }, 'gemini-2.5-flash');
 
     // Remove markdown code blocks if present
     text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
@@ -353,7 +381,7 @@ export const analyzeStudentPerformance = async (studentData: any): Promise<any> 
       const result = await model.generateContent(prompt);
       const response = await result.response;
       return response.text();
-    }, 'gemini-2.0-flash');
+    }, 'gemini-2.5-flash');
     return JSON.parse(text);
   } catch (error) {
     console.error('Error analyzing performance:', error);
@@ -405,7 +433,7 @@ export const generateSocraticHints = async (
       const result = await model.generateContent(prompt);
       const response = await result.response;
       return response.text();
-    }, 'gemini-2.0-flash');
+    }, 'gemini-2.5-flash');
     text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -454,7 +482,7 @@ export const generateConceptExplanation = async (
       const result = await model.generateContent(prompt);
       const response = await result.response;
       return response.text();
-    }, 'gemini-2.0-flash');
+    }, 'gemini-2.5-flash');
     return text.trim();
   } catch (error) {
     console.error('Error generating explanation:', error);
@@ -491,6 +519,7 @@ export const generateReinforcementQuiz = async (
           "options": ["A) Option 1", "B) Option 2", "C) Option 3", "D) Option 4"],
           "correct": 0,
           "explanation": "Why this is correct",
+          "difficulty": "${difficulty}",
           "targetedConcept": "The weak topic this targets"
         }
       ],
@@ -503,7 +532,7 @@ export const generateReinforcementQuiz = async (
       const result = await model.generateContent(prompt);
       const response = await result.response;
       return response.text();
-    }, 'gemini-2.0-flash');
+    }, 'gemini-2.5-flash');
     text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {

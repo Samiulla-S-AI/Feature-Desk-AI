@@ -57,7 +57,9 @@ export default function SelfAssessment() {
         SCIENCE: ['Physics - Motion', 'Chemistry - Reactions', 'Biology - Cells', 'Physics - Light', 'Chemistry - Acids'],
         ENGLISH: ['Grammar', 'Comprehension', 'Essay Writing', 'Poetry', 'Literature'],
         HINDI: ['व्याकरण', 'निबंध', 'कविता', 'गद्य', 'पत्र लेखन'],
-        SOCIAL: ['History', 'Geography', 'Civics', 'Economics']
+        TAMIL: ['இலக்கணம்', 'கட்டுரை', 'செய்யுள்', 'உரைநடை'],
+        SOCIAL: ['History', 'Geography', 'Civics', 'Economics'],
+        COMPUTER: ['Scratch Programming', 'Python Basics', 'Algorithms', 'Computer Networks', 'Hardware & Software']
     };
 
     // Load recent assessments

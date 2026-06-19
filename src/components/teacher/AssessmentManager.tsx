@@ -5,6 +5,7 @@ import {
     Clock,
     Trash2,
     Eye,
+    Edit,
     CheckCircle,
     AlertCircle,
     BookOpen,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { getTeacherAssessments } from '../../lib/teacherDb';
 import { supabase } from '../../lib/supabase';
+import AssessmentCreator from './AssessmentCreator';
 
 interface AssessmentManagerProps {
     classId: number;
@@ -50,6 +52,7 @@ export default function AssessmentManager({ classId: _classId, subjects: _subjec
     const [searchQuery, setSearchQuery] = useState('');
     const [typeFilter, setTypeFilter] = useState<string>('all');
     const [selectedAssessment, setSelectedAssessment] = useState<Assessment | null>(null);
+    const [editingAssessment, setEditingAssessment] = useState<Assessment | null>(null);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
@@ -435,6 +438,14 @@ export default function AssessmentManager({ classId: _classId, subjects: _subjec
                                         </button>
 
                                         <button
+                                            onClick={() => setEditingAssessment(assessment)}
+                                            className="p-2 bg-yellow-100 text-yellow-700 rounded-lg hover:bg-yellow-200 transition-colors"
+                                            title="Edit Assessment"
+                                        >
+                                            <Edit className="w-5 h-5" />
+                                        </button>
+
+                                        <button
                                             onClick={() => setShowDeleteConfirm(assessment.id)}
                                             className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"
                                             title="Delete"
@@ -598,6 +609,20 @@ export default function AssessmentManager({ classId: _classId, subjects: _subjec
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Edit Assessment Modal */}
+            {editingAssessment && (
+                <AssessmentCreator
+                    subjectCode={editingAssessment.subject_code}
+                    classId={editingAssessment.class_id}
+                    availableSubjects={[editingAssessment.subject_code]}
+                    assessmentToEdit={editingAssessment}
+                    onClose={() => {
+                        setEditingAssessment(null);
+                        loadAssessments();
+                    }}
+                />
             )}
         </div>
     );

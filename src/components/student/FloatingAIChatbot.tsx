@@ -4,6 +4,14 @@ import { Bot, X, Send, Minimize2, Sparkles, HelpCircle } from 'lucide-react';
 import { gemini20Flash, CHATBOT_FORMATTING_PROMPT } from '../../lib/gemini';
 import { useAuth } from '../../contexts/AuthContext';
 import MarkdownRenderer from '../common/MarkdownRenderer';
+import {
+  getStudentsByClass,
+  getTeacherAssessments,
+  getPendingResults,
+  getPublishedResults,
+  getStudentsNeedingIntervention,
+  getTeacherContent
+} from '../../lib/teacherDb';
 
 interface Message {
   id: string;
@@ -14,12 +22,59 @@ interface Message {
 
 const FloatingAIChatbot = () => {
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, userType } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isAnalyzingScreen, setIsAnalyzingScreen] = useState(false);
+
+  // For teacher context database caching
+  const [teacherDbData, setTeacherDbData] = useState<{
+    students: any[];
+    assessments: any[];
+    pendingResults: any[];
+    publishedResults: any[];
+    interventionStudents: any[];
+    content: any[];
+  } | null>(null);
+
+  const fetchTeacherData = async () => {
+    if (!user) return null;
+    try {
+      const assignedClass = (user as any)?.assigned_class || 10;
+      const teacherId = user.id || '';
+
+      const [students, assessments, pending, published, intervention, content] = await Promise.all([
+        getStudentsByClass(assignedClass),
+        getTeacherAssessments(teacherId),
+        getPendingResults(teacherId, assignedClass),
+        getPublishedResults(teacherId, assignedClass),
+        getStudentsNeedingIntervention(assignedClass),
+        getTeacherContent(teacherId)
+      ]);
+
+      const data = {
+        students,
+        assessments,
+        pendingResults: pending,
+        publishedResults: published,
+        interventionStudents: intervention,
+        content
+      };
+      setTeacherDbData(data);
+      return data;
+    } catch (err) {
+      console.error('Error fetching teacher dashboard data for chatbot:', err);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && userType === 'teacher' && user) {
+      fetchTeacherData();
+    }
+  }, [isOpen, userType, user]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const dragStartTimeRef = useRef<number>(0);
 
@@ -42,6 +97,22 @@ const FloatingAIChatbot = () => {
   // Get context-aware greeting and suggestions based on current page
   const getContextInfo = () => {
     const path = location.pathname;
+    
+    if (userType === 'teacher') {
+      const activeTabEl = document.querySelector('header h2');
+      const activeTab = activeTabEl ? activeTabEl.textContent?.trim() : 'Dashboard';
+      return {
+        title: `Teacher Portal - ${activeTab}`,
+        greeting: `Hi ${(user as any)?.teacher_name || 'Teacher'}! I see you're on the Teacher Dashboard (${activeTab} tab). I am adaptive to this dashboard and can answer anything about your classes, students, grading, or assessment data visible here. How can I help you today?`,
+        suggestions: [
+          'Who needs intervention?',
+          'Summarize class performance',
+          'Tell me about recent activities',
+          'How do I edit assessments?'
+        ]
+      };
+    }
+
     const contexts: { [key: string]: { title: string; greeting: string; suggestions: string[] } } = {
       '/': {
         title: 'Writing Canvas',
@@ -158,46 +229,159 @@ const FloatingAIChatbot = () => {
 
   const analyzeScreen = async (): Promise<string> => {
     try {
-      const canvas = document.querySelector('canvas');
-      let screenContext = `Page: ${contextInfo.title}\n`;
+      let screenContext = ``;
 
-      if (canvas) {
-        screenContext += `Canvas detected with drawings.\n`;
+      if (userType === 'teacher') {
+        const activeTabEl = document.querySelector('header h2');
+        const activeTab = activeTabEl ? activeTabEl.textContent?.trim() : 'Dashboard';
+        screenContext += `Active Dashboard Tab: ${activeTab}\n\n`;
+
+        // Extract stats cards data
+        const statsCards = Array.from(document.querySelectorAll('.bg-white.p-5.rounded-xl, .bg-white.p-4.rounded-xl, .bg-white.p-5.border, .bg-white.p-4.border'));
+        if (statsCards.length > 0) {
+          screenContext += `### Key Dashboard Stats:\n`;
+          statsCards.forEach(card => {
+            const textParagraphs = Array.from(card.querySelectorAll('p, span, div')).map(el => el.textContent?.trim() || '').filter(Boolean);
+            const cleanTexts = textParagraphs.filter((t, i) => textParagraphs.indexOf(t) === i);
+            if (cleanTexts.length >= 2) {
+              screenContext += `- ${cleanTexts[0]}: ${cleanTexts[1]}\n`;
+            }
+          });
+          screenContext += `\n`;
+        }
+
+        // Extract tables / data rows
+        const tables = Array.from(document.querySelectorAll('table'));
+        if (tables.length > 0) {
+          tables.forEach((table, idx) => {
+            screenContext += `### Data Table ${idx + 1}:\n`;
+            const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent?.trim() || '');
+            if (headers.length > 0) {
+              screenContext += `Headers: ${headers.join(' | ')}\n`;
+            }
+            const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 25);
+            rows.forEach((row, rowIdx) => {
+              const cells = Array.from(row.querySelectorAll('td')).map(td => td.textContent?.trim().replace(/\s+/g, ' ') || '');
+              if (cells.length > 0) {
+                screenContext += `Row ${rowIdx + 1}: ${cells.join(' | ')}\n`;
+              }
+            });
+            screenContext += `\n`;
+          });
+        }
+
+        // Extract list items (recent activities, alerts, contents)
+        const listItems = Array.from(document.querySelectorAll('.space-y-4 .flex.items-center, .space-y-3 .flex.items-center, .grid.grid-cols-1.gap-4 .border, .space-y-4 .border'));
+        if (listItems.length > 0) {
+          screenContext += `### Dashboard Lists & Activities:\n`;
+          let listCount = 0;
+          listItems.forEach(item => {
+            if (!item.closest('nav') && !item.closest('header') && listCount < 20) {
+              const text = item.textContent?.trim().replace(/\s+/g, ' ');
+              if (text) {
+                screenContext += `- ${text}\n`;
+                listCount++;
+              }
+            }
+          });
+          screenContext += `\n`;
+        }
+
+        // Generic visible text summary
+        const bodyText = document.body.innerText.substring(0, 5000);
+        screenContext += `### Full Visible Text Summary:\n${bodyText}`;
+
+      } else {
+        // Student view
+        const canvas = document.querySelector('canvas');
+        screenContext += `Page: ${contextInfo.title}\n`;
+
+        if (canvas) {
+          screenContext += `Canvas detected with drawings.\n`;
+        }
+
+        const bodyText = document.body.innerText.substring(0, 1500);
+        screenContext += `Content: ${bodyText}`;
       }
-
-      const bodyText = document.body.innerText.substring(0, 1500);
-      screenContext += `Content: ${bodyText}`;
 
       return screenContext;
     } catch (error) {
+      console.error('Error during screen analysis:', error);
       return 'Unable to analyze';
     }
   };
 
   const generateResponse = async (userMessage: string): Promise<string> => {
     try {
-      let context = `AI Assistant for ${(user as any)?.student_name || 'Student'} (Class ${(user as any)?.current_class}, ${(user as any)?.current_subject})
+      let context = '';
+      let activeDbData = teacherDbData;
+
+      if (userType === 'teacher' && !activeDbData) {
+        setIsAnalyzingScreen(true);
+        activeDbData = await fetchTeacherData();
+        setIsAnalyzingScreen(false);
+      }
       
+      if (userType === 'teacher') {
+        const assignedClass = (user as any)?.assigned_class || 10;
+        const assignedSubjects = (user as any)?.assigned_subjects || ['MATH'];
+        context = `You are a helpful, smart AI assistant for teacher ${(user as any)?.teacher_name || 'Teacher'} (Class ${assignedClass}, Subjects: ${assignedSubjects.join(', ')}).
+        
+You are adaptive to their Teacher Dashboard. You can answer queries about any data, students, classes, or items currently visible on their dashboard, or in the database.
+
+Page: ${contextInfo.title}`;
+
+        if (activeDbData) {
+          context += `\n\n### COMPLETE DATABASE STATE (Always refer to this state to answer questions about counts, lists, grades, pending reviews, etc. even if not visible on the current DOM/screen):
+- Total Students in Class ${assignedClass}: ${activeDbData.students.length}
+- Students List: ${JSON.stringify(activeDbData.students.map(s => ({ name: s.student_name, roll: s.roll_number, class: s.current_class })))}
+- Total Assessments: ${activeDbData.assessments.length}
+- Assessments List: ${JSON.stringify(activeDbData.assessments.map(a => ({ title: a.title, subject: a.subject_code, class: a.class_id, active: a.is_active })))}
+- Pending Submissions for Review Count: ${activeDbData.pendingResults.length}
+- Pending Submissions List: ${JSON.stringify(activeDbData.pendingResults.map(p => ({ student: p.student_name, roll: p.roll_number, title: p.quiz_title, score: p.score, total_marks: p.total_marks, submitted_at: p.submitted_at })))}
+- Published Answer Sheets/Grades Count: ${activeDbData.publishedResults.length}
+- Published Answer Sheets/Grades List: ${JSON.stringify(activeDbData.publishedResults.map(pr => ({ student: pr.student_name, roll: pr.roll_number, title: pr.quiz_title, score: pr.score, total_marks: pr.total_marks, grade: pr.grade, submitted_at: pr.submitted_at })))}
+- Students Needing Intervention Count: ${activeDbData.interventionStudents.length}
+- Students Needing Intervention List: ${JSON.stringify(activeDbData.interventionStudents.map(is => ({ name: is.student_name, roll: is.roll_number })))}
+- Uploaded Study Materials/Content Count: ${activeDbData.content.length}
+- Study Materials/Content List: ${JSON.stringify(activeDbData.content.map(c => ({ title: c.title, subject: c.subject, type: c.type, url: c.fileUrl })))}
+`;
+        }
+      } else {
+        context = `AI Assistant for ${(user as any)?.student_name || 'Student'} (Class ${(user as any)?.current_class}, ${(user as any)?.current_subject})
+        
 Page: ${contextInfo.title}
 
-Capabilities:`;
+You have access to the student dashboard data, writing canvas context, and notes. You can answer general questions, academic questions, and questions about their learning progress.
 
-      const capabilities: { [key: string]: string } = {
-        '/': '- Guide writing tools\n- Convert handwriting\n- Organize pages\n- Suggest strategies',
-        '/notes': '- Create notes\n- Generate guides\n- Organize tags\n- Make flashcards',
-        '/dashboard': '- Analyze metrics\n- Identify gaps\n- Create plans\n- Track trends',
-        '/history': '- Search activities\n- Create summaries\n- Generate reviews\n- Build schedules',
-        '/gmail': '- Draft emails\n- Format content\n- Suggest etiquette\n- Create templates',
-        '/notifications': '- Prioritize alerts\n- Create to-dos\n- Organize tasks\n- Plan actions'
-      };
+Current Page Focus & Recommendations:`;
 
-      context += capabilities[location.pathname] || capabilities['/'];
+        const capabilities: { [key: string]: string } = {
+          '/': '- Guide writing tools\n- Convert handwriting\n- Organize pages\n- Suggest strategies',
+          '/notes': '- Create notes\n- Generate guides\n- Organize tags\n- Make flashcards',
+          '/dashboard': '- Analyze metrics\n- Identify gaps\n- Create plans\n- Track trends',
+          '/history': '- Search activities\n- Create summaries\n- Generate reviews\n- Build schedules',
+          '/gmail': '- Draft emails\n- Format content\n- Suggest etiquette\n- Create templates',
+          '/notifications': '- Prioritize alerts\n- Create to-dos\n- Organize tasks\n- Plan actions'
+        };
 
-      if (userMessage.toLowerCase().match(/screen|see|what|analyze|show/)) {
+        context += capabilities[location.pathname] || capabilities['/'];
+      }
+
+      // Always analyze screen for teachers to make it completely adaptive to dashboard data
+      if (userType === 'teacher') {
         setIsAnalyzingScreen(true);
         const screenData = await analyzeScreen();
-        context += `\n\nScreen:\n${screenData}`;
+        context += `\n\nActive Teacher Dashboard Screen Data (You MUST use this data to answer questions about stats, student lists, results, grades, etc. in combination with the database state):\n${screenData}`;
         setIsAnalyzingScreen(false);
+      } else {
+        // For students, check if they are asking about screen/grades/scores or dashboard, and supply screen context
+        if (userMessage.toLowerCase().match(/screen|see|what|analyze|show|grade|score|performance|result|answer|quiz|test|stats|detail/)) {
+          setIsAnalyzingScreen(true);
+          const screenData = await analyzeScreen();
+          context += `\n\nActive Student Screen Data (Use this to answer questions about their current view, progress, notes, or stats):\n${screenData}`;
+          setIsAnalyzingScreen(false);
+        }
       }
 
       // Apply formatting guidelines

@@ -73,6 +73,20 @@ export default function ExaminationApp() {
   const [availableExams, setAvailableExams] = useState<Assessment[]>([]);
   const [loadingExams, setLoadingExams] = useState(true);
 
+  const getSubjectDisplayName = (code?: string): string => {
+    if (!code) return '';
+    const upper = code.toUpperCase();
+    if (upper === 'MATH') return 'Mathematics';
+    if (upper === 'SCI' || upper === 'SCIENCE') return 'Science';
+    if (upper === 'ENG' || upper === 'ENGLISH') return 'English';
+    if (upper === 'HIST' || upper === 'GEO' || upper === 'SOCIAL') return 'Social Studies';
+    if (upper === 'COMP' || upper === 'COMPUTER') return 'Computer Science';
+    if (upper === 'HINDI') return 'Hindi';
+    if (upper === 'TAMIL') return 'Tamil';
+    if (upper === 'PHY') return 'Physics';
+    return code;
+  };
+
   // Exam state
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [remainingTime, setRemainingTime] = useState<number>(0);
@@ -106,17 +120,19 @@ export default function ExaminationApp() {
   const currentClass = (user as any)?.current_class || 7;
   const rollNumber = (user as any)?.roll_number || '001';
 
+  const currentSubject = (user as any)?.current_subject;
+
   // Load available exams from teacher-created assessments
   useEffect(() => {
     loadExams();
-  }, [currentClass]);
+  }, [currentClass, currentSubject]);
 
   const loadExams = async () => {
     setLoadingExams(true);
     try {
-      // Pass student ID to check for submissions on the backend
+      // Pass student ID and subject to filter assessments on the backend
       const studentId = (user as any)?.id;
-      const exams = await getStudentExams(currentClass, undefined, studentId);
+      const exams = await getStudentExams(currentClass, currentSubject, studentId);
       setAvailableExams(exams);
     } catch (error) {
       console.error('Error loading exams:', error);
@@ -784,7 +800,7 @@ export default function ExaminationApp() {
                             {getExamTypeLabel(exam.exam_type)}
                           </span>
                           <span className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-xs font-medium">
-                            {exam.subject_code}
+                            {getSubjectDisplayName(exam.subject_code)}
                           </span>
                           {alreadySubmitted && (
                             <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium flex items-center gap-1">

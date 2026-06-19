@@ -29,9 +29,17 @@ export default function NotesApp() {
   const [notes, setNotes] = useState<ClassNote[]>([]);
   const [selectedNote, setSelectedNote] = useState<ClassNote | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterSubject, setFilterSubject] = useState<string>('all');
+  const currentSubject = (user as any)?.current_subject || 'MATH';
+  const [filterSubject, setFilterSubject] = useState<string>(currentSubject);
   const [previewPage, setPreviewPage] = useState(1);
   const [isLoadingNotes, setIsLoadingNotes] = useState(false);
+
+  // Sync subject filter with global writing canvas active subject
+  useEffect(() => {
+    if (user && (user as any).current_subject) {
+      setFilterSubject((user as any).current_subject);
+    }
+  }, [user]);
 
   // School Notes state
   const [activeTab, setActiveTab] = useState<'class' | 'school'>('class');
@@ -125,24 +133,22 @@ export default function NotesApp() {
 
   const subjectNames: { [key: string]: string } = {
     'MATH': 'Mathematics',
-    'SCI': 'Science',
-    'ENG': 'English',
-    'HIST': 'History',
-    'GEO': 'Geography',
-    'COMP': 'Computer Science',
-    'ART': 'Art',
-    'MUSIC': 'Music'
+    'SCIENCE': 'Science',
+    'ENGLISH': 'English',
+    'HINDI': 'Hindi',
+    'TAMIL': 'Tamil',
+    'SOCIAL': 'Social Studies',
+    'COMPUTER': 'Computer Science'
   };
 
   const subjectColors: { [key: string]: string } = {
     'MATH': '#3B82F6',
-    'SCI': '#10B981',
-    'ENG': '#8B5CF6',
-    'HIST': '#F59E0B',
-    'GEO': '#06B6D4',
-    'COMP': '#EC4899',
-    'ART': '#EF4444',
-    'MUSIC': '#6366F1'
+    'SCIENCE': '#10B981',
+    'ENGLISH': '#8B5CF6',
+    'HINDI': '#F59E0B',
+    'TAMIL': '#DC2626',
+    'SOCIAL': '#EF4444',
+    'COMPUTER': '#06B6D4'
   };
 
   const filteredClassNotes = notes.filter(note => {
@@ -261,18 +267,12 @@ export default function NotesApp() {
           </button>
         </div>
 
-        {/* Subject Filter */}
-        <div className="p-3 border-b border-gray-100 bg-gray-50">
-          <select
-            value={filterSubject}
-            onChange={(e) => setFilterSubject(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg bg-white border border-gray-200 text-sm focus:ring-2 focus:ring-green-500"
-          >
-            <option value="all">All Subjects</option>
-            {Object.entries(subjectNames).map(([code, name]) => (
-              <option key={code} value={code}>{name}</option>
-            ))}
-          </select>
+        {/* Subject Filter (Read-Only to Sync with Writing Canvas) */}
+        <div className="p-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between text-xs">
+          <span className="font-bold text-gray-500 uppercase tracking-wider">Active Subject:</span>
+          <span className="px-2.5 py-1 bg-green-100 text-green-800 font-extrabold rounded-lg uppercase tracking-wider">
+            {subjectNames[filterSubject] || filterSubject}
+          </span>
         </div>
 
         {/* Notes List */}

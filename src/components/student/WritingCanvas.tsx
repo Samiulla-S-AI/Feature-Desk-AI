@@ -74,13 +74,12 @@ type DrawingElement = Stroke | Shape | TextElement | ImageElement;
 // Subjects list
 const subjects = [
   { code: 'MATH', name: 'Mathematics', color: '#3B82F6' },
-  { code: 'SCI', name: 'Science', color: '#10B981' },
-  { code: 'ENG', name: 'English', color: '#8B5CF6' },
-  { code: 'HIST', name: 'History', color: '#F59E0B' },
-  { code: 'GEO', name: 'Geography', color: '#06B6D4' },
-  { code: 'COMP', name: 'Computer Science', color: '#EC4899' },
-  { code: 'ART', name: 'Art', color: '#EF4444' },
-  { code: 'MUSIC', name: 'Music', color: '#6366F1' }
+  { code: 'SCIENCE', name: 'Science', color: '#10B981' },
+  { code: 'ENGLISH', name: 'English', color: '#8B5CF6' },
+  { code: 'SOCIAL', name: 'Social Studies', color: '#F59E0B' },
+  { code: 'COMPUTER', name: 'Computer Science', color: '#EC4899' },
+  { code: 'HINDI', name: 'Hindi', color: '#EF4444' },
+  { code: 'TAMIL', name: 'Tamil', color: '#6366F1' }
 ];
 
 // Color palette
@@ -1722,6 +1721,48 @@ export default function WritingCanvas() {
     const classId = (user as any)?.current_class || 1;
     await setClassSubject(classId, subjectCode);
     setShowSubjectSelector(false);
+
+    // Save current note before switching subjects
+    const userId = (user as any)?.id || 'guest';
+    if (elements.length > 0 && currentNoteId) {
+      const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
+      const existingNoteIndex = existingNotes.findIndex((n: any) => n.id === currentNoteId);
+      if (existingNoteIndex >= 0) {
+        existingNotes[existingNoteIndex] = {
+          ...existingNotes[existingNoteIndex],
+          elements,
+          pages,
+          totalPages,
+          currentPage,
+          updatedAt: new Date().toISOString()
+        };
+        localStorage.setItem(`class_notes_${userId}`, JSON.stringify(existingNotes));
+      }
+    }
+
+    // Load the latest note for the new subject
+    const notes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
+    const latestNoteForSubject = notes.find((n: any) => n.subject === subjectCode);
+
+    if (latestNoteForSubject) {
+      setCurrentNoteId(latestNoteForSubject.id);
+      setElements(latestNoteForSubject.elements || []);
+      setPages(latestNoteForSubject.pages || { 1: [] });
+      setTotalPages(latestNoteForSubject.totalPages || 1);
+      setCurrentPage(latestNoteForSubject.currentPage || 1);
+      setNoteTitle(latestNoteForSubject.title || '');
+      setHistoryStack([latestNoteForSubject.elements || []]);
+      setHistoryIndex(0);
+    } else {
+      setCurrentNoteId(null);
+      setElements([]);
+      setPages({ 1: [] });
+      setTotalPages(1);
+      setCurrentPage(1);
+      setNoteTitle('');
+      setHistoryStack([[]]);
+      setHistoryIndex(0);
+    }
   };
 
   // Page management
@@ -2909,8 +2950,8 @@ export default function WritingCanvas() {
 
       {/* Class Selector Modal */}
       {showClassSelector && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 p-6 pointer-events-auto max-w-sm w-full mx-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs" onClick={() => setShowClassSelector(false)}>
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-bold text-slate-800 mb-4">Select Class</h3>
             <div className="grid grid-cols-4 gap-2">
               {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(c => (
@@ -2938,8 +2979,8 @@ export default function WritingCanvas() {
 
       {/* Subject Selector Modal */}
       {showSubjectSelector && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 p-6 pointer-events-auto max-w-sm w-full mx-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs" onClick={() => setShowSubjectSelector(false)}>
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 p-6 max-w-sm w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-bold text-slate-800 mb-4">Select Subject</h3>
             <div className="grid grid-cols-2 gap-2">
               {subjects.map(subj => (

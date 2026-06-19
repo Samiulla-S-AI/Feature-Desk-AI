@@ -41,11 +41,21 @@ export default function AssessmentLauncher({
     const [error, setError] = useState<string | null>(null);
 
     // Subject display name
-    const subjectName = subject === 'MATH' ? 'Mathematics' :
-        subject === 'SCI' ? 'Science' :
-            subject === 'ENG' ? 'English' :
-                subject === 'HIST' ? 'History' :
-                    subject === 'PHY' ? 'Physics' : subject;
+    const getSubjectDisplayName = (code?: string): string => {
+        if (!code) return '';
+        const upper = code.toUpperCase();
+        if (upper === 'MATH') return 'Mathematics';
+        if (upper === 'SCI' || upper === 'SCIENCE') return 'Science';
+        if (upper === 'ENG' || upper === 'ENGLISH') return 'English';
+        if (upper === 'HIST' || upper === 'GEO' || upper === 'SOCIAL') return 'Social Studies';
+        if (upper === 'COMP' || upper === 'COMPUTER') return 'Computer Science';
+        if (upper === 'HINDI') return 'Hindi';
+        if (upper === 'TAMIL') return 'Tamil';
+        if (upper === 'PHY') return 'Physics';
+        return code;
+    };
+
+    const subjectName = getSubjectDisplayName(subject);
 
     // Assessment type display
     const assessmentName = assessmentType === 'quiz' ? 'Quiz' :

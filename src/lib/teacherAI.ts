@@ -14,12 +14,14 @@ export const generateQuestionsFromPDF = async (
         mcqCount: number;
         twoMarkCount: number;
         fiveMarkCount: number;
+        difficulty?: string;
     }
 ): Promise<{
     questions: any[];
     success: boolean;
 }> => {
     try {
+        const difficulty = config.difficulty || 'mixed';
         const prompt = `
     You are an expert educational content creator. Analyze the following lesson content and generate assessment questions.
     
@@ -31,6 +33,7 @@ export const generateQuestionsFromPDF = async (
     - Generate ${config.mcqCount} MCQ questions (1 mark each)
     - Generate ${config.twoMarkCount} short answer questions (2 marks each)
     - Generate ${config.fiveMarkCount} long answer questions (5 marks each)
+    ${difficulty !== 'mixed' ? `- Generate all questions at a "${difficulty}" difficulty level. Ensure question complexity, target reasoning, and vocabulary match the "${difficulty}" level.` : '- Generate a balanced mix of easy, medium, and hard questions.'}
     
     FORMAT (JSON):
     {
@@ -610,12 +613,26 @@ export const forecastClassReadiness = async (
 // Feature 25: Personalized Feedback Generation (Gemini Lite)
 export const generatePersonalizedFeedback = async (
     studentName: string,
-    quizPerformance: { question: string; correct: boolean; answer: string }[]
+    quizPerformance: { question: string; correct: boolean; answer: string }[],
+    adaptiveQuizzes?: any[]
 ): Promise<string> => {
     try {
         const correctCount = quizPerformance.filter(p => p.correct).length;
         const totalCount = quizPerformance.length;
         const percentage = Math.round((correctCount / totalCount) * 100);
+
+        let adaptiveSection = '';
+        if (adaptiveQuizzes && adaptiveQuizzes.length > 0) {
+            adaptiveSection = `\nSTUDENT'S ADAPTIVE REINFORCEMENT QUIZ RECOMMENDATIONS HISTORY:\n`;
+            adaptiveQuizzes.forEach((aq, idx) => {
+                const weakConceptsStr = Array.isArray(aq.weak_concepts) ? aq.weak_concepts.join(', ') : '';
+                adaptiveSection += `- Recommendation ${idx + 1}: Title "${aq.exam_title}" (Subject Code: ${aq.subject_code || 'ALL'}) for weak concepts: [${weakConceptsStr}]. Status: ${aq.status}`;
+                if (aq.status === 'completed') {
+                    adaptiveSection += ` (Completed with Score: ${aq.score}/${aq.total_marks || 10})`;
+                }
+                adaptiveSection += '\n';
+            });
+        }
 
         const prompt = `
     You are ${studentName}'s cool, supportive study buddy — NOT a teacher or examiner.
@@ -626,6 +643,7 @@ export const generatePersonalizedFeedback = async (
     
     PERFORMANCE DETAILS:
     ${quizPerformance.map((p, i) => `Q${i + 1}: ${p.correct ? '✅ Got it!' : '❌ Missed'} — Topic: ${p.question.substring(0, 80)}`).join('\n')}
+    ${adaptiveSection}
     
     Write a personalized feedback message that includes ALL of these sections:
 
@@ -642,6 +660,9 @@ export const generatePersonalizedFeedback = async (
     - For questions they missed, give super simple hints (not full answers)
     - Make it feel like a game: "Next time, try thinking of it like..."
     - Keep it light and encouraging, NOT preachy
+    - IF the student has an adaptive reinforcement quiz history listed above:
+       - Acknowledge their effort on completed reinforcement quizzes (e.g. "I'm so proud of you for completing the reinforcement quiz on [Topic]!")
+       - Gently prompt them to attempt any pending/uncompleted ones to level up their scores (e.g. "Make sure to check out the practice reinforcement quiz on [Topic] next!")
 
     🚀 MOTIVATION:
     - End with a short, genuine, friend-like pep talk (2-3 lines max)

@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import { saveUploadedContent, getTeacherContent } from '../../lib/teacherDb';
 import { cloudinaryService } from '../../lib/cloudinaryService';
+import { fileToBase64 } from '../../lib/pdfProcessor';
+import { extractTextFromPDF } from '../../lib/contentAI';
 
 interface ContentItem {
     id: string;
@@ -119,13 +121,42 @@ export default function ContentManager({ subjectCode, classId }: ContentManagerP
                 uploadedUrl = await cloudinaryService.uploadFile(uploadData.file, 'teacher_content/images');
             }
 
+            // Extract text content from the file if it's a PDF or notes
+            let extractedText = '';
+            try {
+                if (uploadData.type === 'pdf' || fileType === 'application/pdf' || fileName.endsWith('.pdf')) {
+                    const base64 = await fileToBase64(uploadData.file);
+                    const pdfTextResult = await extractTextFromPDF(base64);
+                    if (pdfTextResult.success) {
+                        extractedText = pdfTextResult.text;
+                    }
+                } else if (
+                    uploadData.type === 'notes' || 
+                    fileType === 'text/plain' || 
+                    fileType === 'text/markdown' || 
+                    fileName.endsWith('.txt') || 
+                    fileName.endsWith('.md')
+                ) {
+                    extractedText = await new Promise<string>((resolve) => {
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            resolve(event.target?.result as string || '');
+                        };
+                        reader.readAsText(uploadData.file!);
+                    });
+                }
+            } catch (err) {
+                console.error('Error extracting text for AI processing:', err);
+            }
+
             // Save metadata to Supabase
             const result = await saveUploadedContent(user?.id || '', {
                 title: uploadData.title,
                 subject: uploadData.subject || 'General',
                 classId: classId || 0,
                 type: uploadData.type,
-                fileUrl: uploadedUrl
+                fileUrl: uploadedUrl,
+                extractedText: extractedText
             });
 
             if (result.success) {

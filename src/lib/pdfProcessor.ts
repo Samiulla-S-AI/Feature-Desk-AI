@@ -163,12 +163,15 @@ export const generateQuestionsFromPDFDirect = async (
         mcqCount?: number;
         shortAnswerCount?: number;
         longAnswerCount?: number;
+        difficulty?: string;
     }
 ): Promise<{ success: boolean; questions?: any[]; error?: string }> => {
     try {
-        const { mcqCount = 5, shortAnswerCount = 3, longAnswerCount = 2, subject = '' } = config;
+        const { mcqCount = 5, shortAnswerCount = 3, longAnswerCount = 2, subject = '', difficulty = 'mixed' } = config;
 
         const prompt = `Based on this PDF document${subject ? ` for ${subject}` : ''}, generate questions for an assessment.
+
+${difficulty !== 'mixed' ? `All generated questions must have a difficulty level of "${difficulty}". Ensure the question complexity, target reasoning, and vocabulary match the "${difficulty}" level.` : 'Generate a balanced mix of easy, medium, and hard questions.'}
 
 Generate exactly:
 - ${mcqCount} Multiple Choice Questions (MCQ) - 1 mark each

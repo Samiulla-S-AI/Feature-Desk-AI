@@ -73,6 +73,7 @@ export interface StudentResult {
     teacher_approved: boolean;
     feedback?: string;
     submitted_at: string;
+    subject_code?: string;
 }
 
 export interface AnalyticsData {
@@ -394,7 +395,9 @@ export const generateExamPassword = (rollNumber: string): string => {
 // Get all results for grading (Pending approval)
 export const getPendingResults = async (_teacherId: string, classId?: number): Promise<StudentResult[]> => {
     try {
-        // First try to get from exam_submissions (for formal assessments)
+        const results: StudentResult[] = [];
+
+        // 1. Fetch pending exam submissions (status = 'submitted')
         const { data: submissions, error: subError } = await supabase
             .from('exam_submissions')
             .select(`
@@ -405,16 +408,12 @@ export const getPendingResults = async (_teacherId: string, classId?: number): P
             .order('submitted_at', { ascending: false });
 
         if (!subError && submissions && submissions.length > 0) {
-            // Filter by class if needed
             let filtered = submissions;
             if (classId) {
                 filtered = submissions.filter((s: any) => s.assessments?.class_id === classId);
             }
 
-            // Get student info for each submission
-            const results: StudentResult[] = [];
             for (const sub of filtered) {
-                // Try to get student info
                 const { data: student } = await supabase
                     .from('students')
                     .select('student_name, roll_number')
@@ -433,85 +432,63 @@ export const getPendingResults = async (_teacherId: string, classId?: number): P
                     grade: sub.grade || '',
                     teacher_approved: sub.status === 'graded',
                     feedback: '',
-                    submitted_at: sub.submitted_at || sub.created_at
+                    submitted_at: sub.submitted_at || sub.created_at,
+                    subject_code: sub.assessments?.subject_code
                 });
-            }
-
-            if (results.length > 0) {
-                // Deduplicate: Keep only the latest submission per student per exam
-                const uniqueResults = new Map<string, StudentResult>();
-
-                results.forEach(res => {
-                    const key = `${res.student_id}-${res.quiz_title}`;
-                    const existing = uniqueResults.get(key);
-
-                    if (!existing || new Date(res.submitted_at) > new Date(existing.submitted_at)) {
-                        uniqueResults.set(key, res);
-                    }
-                });
-
-                return Array.from(uniqueResults.values());
             }
         }
 
-        // Fallback: Try quiz_results table (for quick quizzes)
+        // 2. Fetch pending quiz results (grade is null)
         const { data: quizData, error: quizError } = await supabase
             .from('quiz_results')
             .select('*')
-            .limit(50);
+            .is('grade', null)
+            .order('created_at', { ascending: false });
 
-        if (quizError) {
-            console.warn('Quiz results query error:', quizError);
-            return [];
+        if (!quizError && quizData && quizData.length > 0) {
+            let filteredQuiz = quizData;
+            if (classId) {
+                filteredQuiz = quizData.filter((r: any) => r.class_id === classId);
+            }
+
+            for (const r of filteredQuiz) {
+                const { data: student } = await supabase
+                    .from('students')
+                    .select('student_name, roll_number')
+                    .eq('id', r.student_id)
+                    .single();
+
+                results.push({
+                    id: r.id,
+                    student_id: r.student_id,
+                    assessment_id: r.assessment_id || undefined,
+                    student_name: student?.student_name || 'Student',
+                    roll_number: student?.roll_number || 'N/A',
+                    quiz_title: r.quiz_title || 'Quiz',
+                    score: r.score || 0,
+                    total_marks: r.total_marks || r.total_questions || 10,
+                    grade: r.grade || '',
+                    teacher_approved: false,
+                    feedback: '',
+                    submitted_at: r.timestamp || r.created_at || r.submitted_at || new Date().toISOString(),
+                    subject_code: r.subject_code || 'MATH'
+                });
+            }
         }
 
-        if (!quizData || quizData.length === 0) {
-            return [];
-        }
-
-        // Filter by class if the column exists
-        let filtered = quizData;
-        if (classId && quizData[0]?.class_id !== undefined) {
-            filtered = quizData.filter((r: any) => r.class_id === classId);
-        }
-
-        const results: StudentResult[] = [];
-        for (const r of filtered) {
-            const { data: student } = await supabase
-                .from('students')
-                .select('student_name, roll_number')
-                .eq('id', r.student_id)
-                .single();
-
-            results.push({
-                id: r.id,
-                student_id: r.student_id,
-                assessment_id: r.assessment_id,
-                student_name: student?.student_name || 'Student',
-                roll_number: student?.roll_number || 'N/A',
-                quiz_title: r.quiz_title || 'Quiz',
-                score: r.score || 0,
-                total_marks: r.total_questions || 10,
-                grade: r.grade || '',
-                teacher_approved: false,
-                feedback: '',
-                submitted_at: r.created_at || r.timestamp || new Date().toISOString()
-            });
-        }
-
-        // Deduplicate quiz results
-        const uniqueQuizResults = new Map<string, StudentResult>();
+        // 3. Deduplicate: Keep only the latest submission per student per exam/quiz title
+        const uniqueResults = new Map<string, StudentResult>();
 
         results.forEach(res => {
             const key = `${res.student_id}-${res.quiz_title}`;
-            const existing = uniqueQuizResults.get(key);
+            const existing = uniqueResults.get(key);
 
             if (!existing || new Date(res.submitted_at) > new Date(existing.submitted_at)) {
-                uniqueQuizResults.set(key, res);
+                uniqueResults.set(key, res);
             }
         });
 
-        return Array.from(uniqueQuizResults.values());
+        return Array.from(uniqueResults.values());
     } catch (error) {
         console.error('Error fetching pending results:', error);
         return [];
@@ -559,7 +536,8 @@ export const getPublishedResults = async (_teacherId: string, classId?: number):
                     grade: sub.grade || '',
                     teacher_approved: true,
                     feedback: sub.feedback || '', // We might want to fetch feedback if stored
-                    submitted_at: sub.submitted_at || sub.created_at
+                    submitted_at: sub.submitted_at || sub.created_at,
+                    subject_code: sub.assessments?.subject_code
                 });
             }
         }
@@ -597,7 +575,8 @@ export const getPublishedResults = async (_teacherId: string, classId?: number):
                     grade: r.grade || '',
                     teacher_approved: true,
                     feedback: r.feedback || '',
-                    submitted_at: r.created_at || r.timestamp || new Date().toISOString()
+                    submitted_at: r.created_at || r.timestamp || new Date().toISOString(),
+                    subject_code: r.subject_code || 'MATH'
                 });
             }
         }
@@ -944,6 +923,81 @@ export const getStudentsNeedingIntervention = async (classId: number): Promise<S
             .map(sf => sf.student);
     } catch (error) {
         console.error('Error checking intervention needs:', error);
+        return [];
+    }
+};
+
+// Update an existing assessment
+export const updateAssessment = async (id: string, assessment: Partial<Assessment>): Promise<{ success: boolean }> => {
+    try {
+        const updateData: any = {};
+        
+        if (assessment.title !== undefined) updateData.title = assessment.title;
+        if (assessment.subject_code !== undefined) updateData.subject_code = assessment.subject_code;
+        if (assessment.class_id !== undefined) updateData.class_id = assessment.class_id;
+        if (assessment.total_marks !== undefined) updateData.total_marks = assessment.total_marks;
+        if (assessment.time_limit !== undefined) updateData.time_limit = assessment.time_limit;
+        if (assessment.scheduled_at !== undefined) updateData.scheduled_at = assessment.scheduled_at;
+        if (assessment.is_active !== undefined) updateData.is_active = assessment.is_active;
+
+        // Retrieve current configuration first to merge
+        const { data: currentData, error: fetchError } = await supabase
+            .from('assessments')
+            .select('description')
+            .eq('id', id)
+            .single();
+
+        if (fetchError) throw fetchError;
+
+        let currentConfig: any = {};
+        if (currentData?.description) {
+            try {
+                currentConfig = JSON.parse(currentData.description);
+            } catch (e) {
+                // description is plain text
+            }
+        }
+
+        const newConfig = {
+            ...currentConfig,
+            exam_type: assessment.exam_type !== undefined ? assessment.exam_type : currentConfig.exam_type,
+            passing_marks: assessment.passing_marks !== undefined ? assessment.passing_marks : currentConfig.passing_marks,
+            negative_marking: assessment.negative_marking !== undefined ? assessment.negative_marking : currentConfig.negative_marking,
+            shuffle_questions: assessment.shuffle_questions !== undefined ? assessment.shuffle_questions : currentConfig.shuffle_questions,
+            instructions: assessment.instructions !== undefined ? assessment.instructions : currentConfig.instructions,
+            exam_password: assessment.exam_password !== undefined ? assessment.exam_password : currentConfig.exam_password,
+            questions: assessment.questions !== undefined ? assessment.questions : currentConfig.questions
+        };
+
+        updateData.description = JSON.stringify(newConfig);
+
+        const { error } = await supabase
+            .from('assessments')
+            .update(updateData)
+            .eq('id', id);
+
+        if (error) throw error;
+        console.log('✅ Assessment updated in Supabase (ID):', id);
+        return { success: true };
+    } catch (error) {
+        console.error('❌ Error updating assessment:', error);
+        return { success: false };
+    }
+};
+
+// Get all uploaded content for a specific class and subject
+export const getStudentContent = async (classId: number, subjectCode: string): Promise<any[]> => {
+    try {
+        const { data, error } = await supabase
+            .from('teacher_content')
+            .select('*')
+            .eq('class_id', classId)
+            .eq('subject_code', subjectCode);
+
+        if (error) throw error;
+        return data || [];
+    } catch (error) {
+        console.error('Error fetching student content:', error);
         return [];
     }
 };

@@ -27,6 +27,7 @@ import { gradeImageAnswerWithRubric, generatePersonalizedFeedback, generateImage
 import { cloudinaryService } from '../../lib/cloudinaryService';
 import { sendGradeReportNotification, QuestionFeedback } from '../../lib/notificationService';
 import MarkdownRenderer from '../common/MarkdownRenderer';
+import { supabase } from '../../lib/supabase';
 
 interface GradingCenterProps {
     classId?: number;
@@ -67,20 +68,21 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
 
     const loadResults = async () => {
         setLoading(true);
-        if (activeTab === 'pending') {
-            const results = await getPendingResults(user?.id || '', classId);
-            setPendingResults(results);
-            // Load submission details for each result
-            for (const result of results) {
-                await loadSubmissionDetails(result.id);
-            }
-        } else {
-            const results = await getPublishedResults(user?.id || '', classId);
-            setPublishedResults(results);
-            // Load submission details for each result
-            for (const result of results) {
-                await loadSubmissionDetails(result.id);
-            }
+        const teacherId = user?.id || '';
+        
+        // Fetch both lists to keep counts accurate
+        const [pending, published] = await Promise.all([
+            getPendingResults(teacherId, classId),
+            getPublishedResults(teacherId, classId)
+        ]);
+        
+        setPendingResults(pending);
+        setPublishedResults(published);
+
+        // Load details for the active tab's results
+        const activeResults = activeTab === 'pending' ? pending : published;
+        for (const result of activeResults) {
+            await loadSubmissionDetails(result.id);
         }
         setLoading(false);
     };
@@ -267,19 +269,21 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
             // Fallback: Check for Quiz Result JSON answers
             const { data: quizResults, error: quizError } = await supabase
                 .from('quiz_results')
-                .select('id, answers')
+                .select('id, answers, total_marks')
                 .eq('id', resultId);
 
             const quizResult = quizResults && quizResults.length > 0 ? quizResults[0] : null;
 
             if (!quizError && quizResult?.answers) {
                 const ansArray = Array.isArray(quizResult.answers) ? quizResult.answers : [];
+                const totalMarksVal = quizResult.total_marks || 25;
+                const qMarks = ansArray.length > 0 ? (totalMarksVal / ansArray.length) : 5;
                 const questions: SubmissionQuestion[] = ansArray.map((q: any, i: number) => ({
                     questionId: `q-${i}`,
                     questionText: q.question || q.questionText || `Question ${i + 1}`,
                     answer: q.student_answer || q.userAnswer || q.answer || q.selectedOption || '',
-                    marks: 1,
-                    allocatedMarks: q.is_correct ? 1 : 0,
+                    marks: qMarks,
+                    allocatedMarks: q.is_correct ? qMarks : 0,
                     suggestion: '',
                     isDrawing: false
                 }));
@@ -721,7 +725,18 @@ RULES:
                 }
             }));
 
-            // Auto-fill personalized feedback using per-question results
+            let studentAdaptiveQuizzes: any[] = [];
+            try {
+                const { data: recData } = await supabase
+                    .from('student_adaptive_quizzes')
+                    .select('*')
+                    .eq('student_id', result.student_id);
+                studentAdaptiveQuizzes = recData || [];
+            } catch (err) {
+                console.error('Failed to load student adaptive quizzes for feedback generation:', err);
+            }
+
+            // Auto-fill personalized feedback using per-question results and adaptive quiz history
             const feedback = await generatePersonalizedFeedback(
                 result.student_name,
                 questions.map((q, i) => {
@@ -732,7 +747,8 @@ RULES:
                         correct: awarded >= q.marks * 0.5,
                         answer: q.answer.replace(/\[DRAWING\]:.*?(\|\|\||$)/, '[Drawing]')
                     };
-                })
+                }),
+                studentAdaptiveQuizzes
             );
 
             setCustomFeedback(prev => ({
@@ -837,6 +853,11 @@ RULES:
 
                 // Send notification to student
                 try {
+                    // Detect weak concepts: Scored < 60% of marks for any question
+                    const weakConcepts = questionFeedback
+                        .filter((q: any) => (q.marksAwarded / q.totalMarks) < 0.6)
+                        .map((q: any) => q.questionText);
+
                     sendGradeReportNotification(
                         result.student_id,
                         result.student_name,
@@ -846,12 +867,26 @@ RULES:
                         grade,
                         fullFeedback,
                         questionFeedback,
-                        answerSheetUrl || undefined
+                        answerSheetUrl || undefined,
+                        weakConcepts, // Pass weak concepts so they show in the notification message
+                        result.subject_code
                     );
                     console.log(`✅ Notification sent to student ${result.student_name} for ${result.quiz_title}`);
                     console.log(`📋 Question feedback included: ${questionFeedback.length} questions`);
+
+                    if (weakConcepts.length > 0) {
+                        const { createAdaptiveQuizRecommendation } = await import('../../lib/adaptiveQuizService');
+                        await createAdaptiveQuizRecommendation(
+                            result.student_id,
+                            result.assessment_id || result.id || '',
+                            result.quiz_title || 'Exam',
+                            result.subject_code || 'MATH',
+                            weakConcepts
+                        );
+                        console.log(`🎯 Adaptive practice quiz generated for student ${result.student_name} on weak topics:`, weakConcepts);
+                    }
                 } catch (notifError) {
-                    console.error('Failed to send notification:', notifError);
+                    console.error('Failed to send notification or generate adaptive recommendation:', notifError);
                 }
             }
 
@@ -1039,7 +1074,15 @@ RULES:
                         </h2>
                     </div>
                     <p className="text-slate-500 font-medium pl-14">
-                        <strong className="text-blue-600">{pendingResults.length}</strong> submissions waiting for your review
+                        {activeTab === 'pending' ? (
+                            <>
+                                <strong className="text-blue-600">{pendingResults.length}</strong> submissions waiting for your review
+                            </>
+                        ) : (
+                            <>
+                                <strong className="text-blue-600">{publishedResults.length}</strong> published answer sheets
+                            </>
+                        )}
                     </p>
                 </div>
                 <div className="flex bg-slate-100 p-1 rounded-xl">
@@ -1047,13 +1090,13 @@ RULES:
                         onClick={() => setActiveTab('pending')}
                         className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'pending' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                     >
-                        Pending Review
+                        Pending Review ({pendingResults.length})
                     </button>
                     <button
                         onClick={() => setActiveTab('published')}
                         className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'published' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                     >
-                        Published
+                        Published ({publishedResults.length})
                     </button>
                 </div>
                 <button

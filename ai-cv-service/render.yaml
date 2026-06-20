@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: featuredesk-cv-service
+    env: python
+    plan: free
+    healthCheckPath: /api/v1/health
+    buildCommand: "pip install -r requirements.txt && python download_models.py"
+    startCommand: "uvicorn app:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: API_KEY
+        sync: false
+      - key: DEBUG
+        value: "false"
+      - key: PRELOAD_MODELS
+        value: "false"
+      - key: CORS_ORIGINS
+        value: '["https://featuredeskx.netlify.app","http://localhost:5173"]'

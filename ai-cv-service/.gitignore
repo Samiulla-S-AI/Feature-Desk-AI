@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Models / Large weights
+models/*.pt
+models/*.task
+!models/.gitkeep
+
+# IDEs
+.idea/
+.vscode/
+
+# Logs
+logs/
+*.log

@@ -32,7 +32,6 @@ import BatchQuestionImport from './BatchQuestionImport';
 import TeacherCollaboration from './TeacherCollaboration';
 import StudyMaterialsManager from './StudyMaterialsManager';
 import AssessmentManager from './AssessmentManager';
-import { TeacherPerformanceMonitor } from '../cv';
 
 // Import database functions
 import { getClassAnalytics, getStudentsNeedingIntervention, getPendingResults } from '../../lib/teacherDb';

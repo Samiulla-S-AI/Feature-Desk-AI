@@ -1,0 +1,44 @@
+ALL RIGHTS RESERVED PROPRIETARY & CONFIDENTIAL LICENSE
+=====================================================
+
+Copyright (c) 2026 Samiulla S. All rights reserved.
+
+NOTICE: THIS IS A PROPRIETARY, CONFIDENTIAL, AND COPYRIGHT-PROTECTED CODEBASE AND ARCHITECTURE DESIGN. 
+
+THE ACCOMPANYING SYSTEM, SOURCE CODE, ASSETS, DATA MODELS, INTERFACES, DOCUMENTATION, ARCHITECTURAL DESIGNS, LOGICAL DIAGRAMS, ALGORITHMIC IMPLEMENTATIONS, AND DESIGN PATTERNS (COLLECTIVELY, THE "WORK") ARE THE SOLE AND EXCLUSIVE PROPERTY OF THE COPYRIGHT HOLDER ("OWNER").
+
+BY ACCESSING, VIEWING, CLONING, OR POSSESSING A COPY OF THIS WORK (WHETHER IN WHOLE OR IN PART), YOU ACKNOWLEDGE AND AGREE TO BE BOUND BY THE STRICT TERMS AND CONDITIONS OF THIS AGREEMENT.
+
+1. OWNERSHIP & INTELLECTUAL PROPERTY RIGHTS
+-------------------------------------------
+All title, ownership, patents, utility models, designs, copyrights, trade secrets, database rights, and other intellectual property rights in and to the Work, including but not limited to:
+- The system architectural models, structural patterns, flow charts, and visual layouts.
+- AI integration protocols, proctoring algorithms, canvas handwriting conversion engines, offline synchronization engines, and custom telemetry data structures.
+- Source code (TypeScript, JavaScript, HTML, CSS, SQL, Python, shell scripts), documentation, and configuration schemas.
+are, and shall remain, the sole and exclusive property of the Owner. Nothing in this license transfers any intellectual property rights or ownership to any third party.
+
+2. EXPRESS PROHIBITIONS & RESTRICTIONS
+--------------------------------------
+Except as explicitly authorized in writing by the Owner, you are STRICTLY PROHIBITED from:
+- **Copying & Duplication**: Creating, cloning, downloading, saving, or hosting copies, forks, or mirrors of the Work or any portion thereof.
+- **Redistribution & Publishing**: Distributing, sublicensing, leasing, renting, transferring, sharing, displaying publicly, or publishing the Work to public or private repositories, forums, websites, package registries (such as npm, PyPI, GitHub packages), or any storage medium.
+- **Modification & Derivative Works**: Translating, adapting, modifying, modifying the logic flow, or creating derivative works based upon the Work or its underlying architectural designs.
+- **Reverse Engineering**: Decompiling, reverse engineering, disassembling, decrypting, extracting, or attempting to discover the source code, design architectures, or underlying algorithms of the Work.
+- **Commercial & Non-Commercial Exploitation**: Using the Work, or any concept, design idea, or implementation logic directly derived from the Work, to build, market, license, deploy, or run any software product, service, microservice, or platform, whether for commercial profit or non-profit purposes.
+
+3. COPIES FOR VETTING & FORKS ON GITHUB
+---------------------------------------
+If the Work is hosted on GitHub or another code hosting platform:
+- The presence of the Work in a public repository does NOT grant any license to run, fork, clone, or copy the codebase. 
+- You may only inspect the code online in its original repository for personal review and analysis.
+- Cloning the code to local environments, creating public/private forks, or downloading ZIP archives of this repository without written authorization constitutes direct copyright infringement.
+
+4. SEVERE REMEDIES FOR VIOLATION
+--------------------------------
+The Owner reserves the right to pursue all legal and equitable remedies available under domestic and international laws, including but not limited to:
+- Filing Digital Millennium Copyright Act (DMCA) takedown notices against any platform hosting unauthorized forks, mirrors, or derivatives (including GitHub, GitLab, Bitbucket, cloud host providers, etc.).
+- Seeking statutory damages, actual damages, lost profits, injunctions, and recovery of legal fees and court costs in a court of competent jurisdiction for copyright infringement, patent infringement, trade secret theft, and breach of agreement.
+
+5. NO WARRANTY & DISCLAIMER
+---------------------------
+THIS WORK IS PROVIDED BY THE OWNER "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT ARE EXCLUSIVELY DISCLAIMED. IN NO EVENT SHALL THE OWNER BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE, ACCESS, OR EXPOSURE TO THIS WORK, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

@@ -33,6 +33,7 @@ import TeacherCollaboration from './TeacherCollaboration';
 import StudyMaterialsManager from './StudyMaterialsManager';
 import AssessmentManager from './AssessmentManager';
 
+
 // Import database functions
 import { getClassAnalytics, getStudentsNeedingIntervention, getPendingResults } from '../../lib/teacherDb';
 
@@ -221,8 +222,6 @@ export default function TeacherDashboard() {
         <main className="flex-1 p-6 overflow-auto">
           {activeTab === 'overview' && (
             <div className="space-y-6">
-              {/* AI CV microservice — live attention monitoring (reads Supabase) */}
-              <TeacherPerformanceMonitor />
               {/* Quick Stats */}
               <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div className="bg-white p-5 rounded-xl shadow-sm border">

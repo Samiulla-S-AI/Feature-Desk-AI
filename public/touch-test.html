@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Touch Surface Diagnostic — Stylus Calibration</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    #header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      background: rgba(15, 23, 42, 0.95);
+      border-bottom: 1px solid #334155;
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      backdrop-filter: blur(12px);
+    }
+
+    #header h1 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #38bdf8;
+      letter-spacing: 0.5px;
+    }
+
+    #header .badge {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: #1e293b;
+      border: 1px solid #475569;
+      color: #94a3b8;
+    }
+
+    #canvas-area {
+      position: fixed;
+      top: 44px;
+      left: 0;
+      right: 0;
+      bottom: 200px;
+      background: #1e293b;
+      cursor: crosshair;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #data-panel {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 200px;
+      background: rgba(15, 23, 42, 0.98);
+      border-top: 2px solid #38bdf8;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    #data-panel .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #38bdf8;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 2px;
+    }
+
+    .contact-row {
+      display: grid;
+      grid-template-columns: 60px repeat(8, 1fr);
+      gap: 4px;
+      font-size: 11px;
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      padding: 4px 6px;
+      border-radius: 4px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      align-items: center;
+    }
+
+    .contact-row.stylus-candidate {
+      border-color: #22c55e;
+      background: rgba(34, 197, 94, 0.08);
+    }
+
+    .contact-row.palm-candidate {
+      border-color: #ef4444;
+      background: rgba(239, 68, 68, 0.06);
+    }
+
+    .contact-row .label {
+      color: #64748b;
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+
+    .contact-row .value {
+      color: #f1f5f9;
+      font-weight: 600;
+    }
+
+    .contact-row .value.green { color: #4ade80; }
+    .contact-row .value.red { color: #f87171; }
+    .contact-row .value.yellow { color: #fbbf24; }
+    .contact-row .value.blue { color: #60a5fa; }
+
+    #history-panel {
+      margin-top: 4px;
+    }
+
+    .history-entry {
+      font-size: 10px;
+      font-family: monospace;
+      color: #94a3b8;
+      padding: 2px 6px;
+      border-left: 2px solid #475569;
+      margin-bottom: 2px;
+    }
+
+    .history-entry.stylus-h { border-left-color: #22c55e; }
+    .history-entry.palm-h { border-left-color: #ef4444; }
+    .history-entry.finger-h { border-left-color: #3b82f6; }
+
+    #stats-bar {
+      display: flex;
+      gap: 12px;
+      padding: 4px 8px;
+      background: #0f172a;
+      border-radius: 4px;
+      font-size: 10px;
+      font-family: monospace;
+      flex-shrink: 0;
+    }
+
+    #stats-bar .stat {
+      display: flex;
+      gap: 4px;
+    }
+
+    #stats-bar .stat-label { color: #64748b; }
+    #stats-bar .stat-value { color: #e2e8f0; font-weight: 600; }
+
+    .action-btn {
+      position: fixed;
+      top: 50px;
+      z-index: 101;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .clear-btn {
+      right: 8px;
+      background: #dc2626;
+    }
+
+    .copy-btn {
+      right: 80px;
+      background: #2563eb;
+    }
+
+    .copy-btn.copied {
+      background: #16a34a;
+    }
+
+    #toast {
+      position: fixed;
+      bottom: 210px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #22c55e;
+      color: white;
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: sans-serif;
+      z-index: 200;
+      opacity: 0;
+      transition: opacity 0.3s, transform 0.3s;
+      pointer-events: none;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>🖊️ TOUCH SURFACE DIAGNOSTIC — STYLUS CALIBRATION</h1>
+    <span class="badge" id="touch-count">Touches: 0</span>
+  </div>
+
+  <button class="action-btn copy-btn" id="copy-btn">📋 COPY LOG</button>
+  <button class="action-btn clear-btn" id="clear-btn">CLEAR</button>
+  <div id="toast">✅ Log copied to clipboard!</div>
+
+  <div id="canvas-area">
+    <canvas id="diag-canvas"></canvas>
+  </div>
+
+  <div id="data-panel">
+    <div id="stats-bar">
+      <div class="stat"><span class="stat-label">Min Area:</span> <span class="stat-value" id="stat-min-area">—</span></div>
+      <div class="stat"><span class="stat-label">Max Area:</span> <span class="stat-value" id="stat-max-area">—</span></div>
+      <div class="stat"><span class="stat-label">Avg Area:</span> <span class="stat-value" id="stat-avg-area">—</span></div>
+      <div class="stat"><span class="stat-label">Samples:</span> <span class="stat-value" id="stat-samples">0</span></div>
+      <div class="stat"><span class="stat-label">Min W×H:</span> <span class="stat-value" id="stat-min-wh">—</span></div>
+      <div class="stat"><span class="stat-label">Max W×H:</span> <span class="stat-value" id="stat-max-wh">—</span></div>
+    </div>
+    <div class="section-title">LIVE CONTACTS</div>
+    <div id="live-contacts"></div>
+    <div class="section-title" style="margin-top:6px;">HISTORY (Tap/Stroke Log)</div>
+    <div id="history-panel"></div>
+  </div>
+
+  <script>
+    // ── STATE ──
+    const contacts = new Map();
+    const areaHistory = [];
+    let allAreas = [];
+    const historyLog = []; // Store all history text entries for copy
+    let strokeId = 0;
+
+    // ── CANVAS SETUP ──
+    const canvasArea = document.getElementById('canvas-area');
+    const canvas = document.getElementById('diag-canvas');
+    const ctx = canvas.getContext('2d');
+
+    function resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = canvasArea.clientWidth * dpr;
+      canvas.height = canvasArea.clientHeight * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // ── STATS ──
+    function updateStats() {
+      if (allAreas.length === 0) return;
+      const min = Math.min(...allAreas);
+      const max = Math.max(...allAreas);
+      const avg = allAreas.reduce((a, b) => a + b, 0) / allAreas.length;
+      document.getElementById('stat-min-area').textContent = min.toFixed(1);
+      document.getElementById('stat-max-area').textContent = max.toFixed(1);
+      document.getElementById('stat-avg-area').textContent = avg.toFixed(1);
+      document.getElementById('stat-samples').textContent = allAreas.length;
+    }
+
+    // ── CLASSIFY (simple area-based) ──
+    function classify(w, h, area) {
+      if (area <= 4 && w <= 2 && h <= 2) return 'STYLUS?';
+      if (area <= 16) return 'STYLUS?';
+      if (area <= 50) return 'FINGER?';
+      return 'PALM?';
+    }
+
+    function classColor(cls) {
+      if (cls.includes('STYLUS')) return '#22c55e';
+      if (cls.includes('FINGER')) return '#3b82f6';
+      return '#ef4444';
+    }
+
+    // ── RENDER LIVE CONTACTS TABLE ──
+    function renderContacts() {
+      const container = document.getElementById('live-contacts');
+      let html = '';
+      contacts.forEach((c, id) => {
+        const cls = classify(c.width, c.height, c.area);
+        const rowClass = cls.includes('STYLUS') ? 'stylus-candidate' : (cls.includes('PALM') ? 'palm-candidate' : '');
+        const areaColor = c.area <= 16 ? 'green' : (c.area <= 50 ? 'yellow' : 'red');
+        html += `<div class="contact-row ${rowClass}">
+          <div><span class="label">ID</span><br><span class="value blue">${id}</span></div>
+          <div><span class="label">Width</span><br><span class="value">${c.width.toFixed(1)}</span></div>
+          <div><span class="label">Height</span><br><span class="value">${c.height.toFixed(1)}</span></div>
+          <div><span class="label">Area</span><br><span class="value ${areaColor}">${c.area.toFixed(1)}</span></div>
+          <div><span class="label">Pressure</span><br><span class="value">${c.pressure.toFixed(3)}</span></div>
+          <div><span class="label">X</span><br><span class="value">${c.x.toFixed(0)}</span></div>
+          <div><span class="label">Y</span><br><span class="value">${c.y.toFixed(0)}</span></div>
+          <div><span class="label">Type</span><br><span class="value">${c.pointerType}</span></div>
+          <div><span class="label">Class</span><br><span class="value" style="color:${classColor(cls)}">${cls}</span></div>
+        </div>`;
+      });
+      container.innerHTML = html || '<div style="font-size:11px;color:#475569;padding:8px;">Touch the screen with your stylus, finger, or palm...</div>';
+      document.getElementById('touch-count').textContent = `Touches: ${contacts.size}`;
+    }
+
+    // ── ADD HISTORY ENTRY ──
+    function addHistory(contact, eventType) {
+      const cls = classify(contact.width, contact.height, contact.area);
+      const clsClass = cls.includes('STYLUS') ? 'stylus-h' : (cls.includes('PALM') ? 'palm-h' : 'finger-h');
+      const text = `[${eventType}] ID:${contact.id} | W:${contact.width.toFixed(1)} H:${contact.height.toFixed(1)} Area:${contact.area.toFixed(1)} | Pressure:${contact.pressure.toFixed(3)} | Type:${contact.pointerType} | X:${contact.x.toFixed(0)} Y:${contact.y.toFixed(0)} → ${cls}`;
+      
+      // Store in log array
+      const timestamp = new Date().toISOString().substr(11, 12);
+      historyLog.push(`${timestamp}  ${text}`);
+
+      const entry = document.createElement('div');
+      entry.className = `history-entry ${clsClass}`;
+      entry.textContent = text;
+      const panel = document.getElementById('history-panel');
+      panel.insertBefore(entry, panel.firstChild);
+      // Keep max 100 DOM entries
+      while (panel.children.length > 100) panel.removeChild(panel.lastChild);
+    }
+
+    // Update min/max W×H display
+    let minW = Infinity, minH = Infinity, maxW = 0, maxH = 0;
+    function updateWHStats(w, h) {
+      if (w > 0 && h > 0) {
+        minW = Math.min(minW, w);
+        minH = Math.min(minH, h);
+        maxW = Math.max(maxW, w);
+        maxH = Math.max(maxH, h);
+        document.getElementById('stat-min-wh').textContent = `${minW.toFixed(1)}×${minH.toFixed(1)}`;
+        document.getElementById('stat-max-wh').textContent = `${maxW.toFixed(1)}×${maxH.toFixed(1)}`;
+      }
+    }
+
+    // ── DRAW CONTACT VISUALIZATION ON CANVAS ──
+    function drawContacts() {
+      ctx.clearRect(0, 0, canvasArea.clientWidth, canvasArea.clientHeight);
+
+      // Grid
+      ctx.strokeStyle = 'rgba(51, 65, 85, 0.3)';
+      ctx.lineWidth = 0.5;
+      for (let x = 0; x < canvasArea.clientWidth; x += 50) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvasArea.clientHeight); ctx.stroke();
+      }
+      for (let y = 0; y < canvasArea.clientHeight; y += 50) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvasArea.clientWidth, y); ctx.stroke();
+      }
+
+      // Center text
+      if (contacts.size === 0) {
+        ctx.fillStyle = '#334155';
+        ctx.font = '18px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Touch here with STYLUS PEN, FINGER, or PALM', canvasArea.clientWidth / 2, canvasArea.clientHeight / 2 - 20);
+        ctx.font = '13px sans-serif';
+        ctx.fillText('Watch the live data panel below to see W×H, Area, and Pressure values', canvasArea.clientWidth / 2, canvasArea.clientHeight / 2 + 10);
+        ctx.textAlign = 'left';
+      }
+
+      contacts.forEach((c) => {
+        const cls = classify(c.width, c.height, c.area);
+        const color = classColor(cls);
+
+        // Draw contact area ellipse (scaled up for visibility)
+        const drawW = Math.max(c.width * 3, 20);
+        const drawH = Math.max(c.height * 3, 20);
+
+        // Outer ring
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(c.canvasX, c.canvasY, drawW / 2, drawH / 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Fill
+        ctx.fillStyle = color.replace(')', ', 0.15)').replace('rgb', 'rgba');
+        ctx.beginPath();
+        ctx.ellipse(c.canvasX, c.canvasY, drawW / 2, drawH / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Center dot
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(c.canvasX, c.canvasY, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Crosshair
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(c.canvasX - 40, c.canvasY); ctx.lineTo(c.canvasX + 40, c.canvasY); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(c.canvasX, c.canvasY - 40); ctx.lineTo(c.canvasX, c.canvasY + 40); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label above contact
+        const label = `${cls}  W:${c.width.toFixed(1)} H:${c.height.toFixed(1)} A:${c.area.toFixed(1)}`;
+        ctx.font = 'bold 12px monospace';
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(c.canvasX - tw / 2 - 6, c.canvasY - drawH / 2 - 28, tw + 12, 22);
+        ctx.fillStyle = color;
+        ctx.fillText(label, c.canvasX - tw / 2, c.canvasY - drawH / 2 - 12);
+
+        // Trail
+        if (c.trail && c.trail.length > 1) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(c.trail[0].x, c.trail[0].y);
+          for (let i = 1; i < c.trail.length; i++) {
+            ctx.lineTo(c.trail[i].x, c.trail[i].y);
+          }
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      });
+    }
+
+    // ── EXTRACT CONTACT DATA ──
+    function extractContact(e) {
+      const rect = canvasArea.getBoundingClientRect();
+      return {
+        id: e.pointerId,
+        width: e.width || 0,
+        height: e.height || 0,
+        area: (e.width || 0) * (e.height || 0),
+        pressure: e.pressure || 0,
+        x: e.clientX,
+        y: e.clientY,
+        canvasX: e.clientX - rect.left,
+        canvasY: e.clientY - rect.top,
+        pointerType: e.pointerType || 'unknown',
+        tiltX: e.tiltX || 0,
+        tiltY: e.tiltY || 0,
+        twist: e.twist || 0,
+        tangentialPressure: e.tangentialPressure || 0,
+        trail: [],
+        time: Date.now()
+      };
+    }
+
+    // ── EVENT HANDLERS ──
+    canvasArea.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { canvasArea.setPointerCapture(e.pointerId); } catch(_) {}
+      const c = extractContact(e);
+      c.trail = [{ x: c.canvasX, y: c.canvasY }];
+      contacts.set(e.pointerId, c);
+
+      allAreas.push(c.area);
+      updateWHStats(c.width, c.height);
+      updateStats();
+      addHistory(c, 'DOWN');
+      renderContacts();
+      drawContacts();
+    });
+
+    canvasArea.addEventListener('pointermove', (e) => {
+      e.preventDefault();
+      const existing = contacts.get(e.pointerId);
+      if (!existing) return;
+
+      const c = extractContact(e);
+      c.trail = existing.trail || [];
+      c.trail.push({ x: c.canvasX, y: c.canvasY });
+      if (c.trail.length > 100) c.trail.shift();
+      contacts.set(e.pointerId, c);
+
+      allAreas.push(c.area);
+      updateWHStats(c.width, c.height);
+      updateStats();
+      renderContacts();
+      drawContacts();
+    });
+
+    canvasArea.addEventListener('pointerup', (e) => {
+      e.preventDefault();
+      const c = contacts.get(e.pointerId);
+      if (c) addHistory(c, 'UP');
+      contacts.delete(e.pointerId);
+      try { canvasArea.releasePointerCapture(e.pointerId); } catch(_) {}
+      renderContacts();
+      drawContacts();
+    });
+
+    canvasArea.addEventListener('pointercancel', (e) => {
+      contacts.delete(e.pointerId);
+      renderContacts();
+      drawContacts();
+    });
+
+    // Prevent all touch defaults
+    canvasArea.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+    canvasArea.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+    canvasArea.addEventListener('touchend', e => e.preventDefault(), { passive: false });
+
+    // ── COPY LOG BUTTON ──
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    document.getElementById('copy-btn').addEventListener('click', () => {
+      // Build full log text
+      const statsText = [
+        '═══════════════════════════════════════════════',
+        '  TOUCH SURFACE DIAGNOSTIC — CALIBRATION LOG',
+        '═══════════════════════════════════════════════',
+        `  Date:       ${new Date().toLocaleString()}`,
+        `  User Agent: ${navigator.userAgent}`,
+        `  Screen:     ${screen.width}×${screen.height} @ ${window.devicePixelRatio}x DPR`,
+        '───────────────────────────────────────────────',
+        '  STATS SUMMARY',
+        '───────────────────────────────────────────────',
+        `  Total Samples: ${allAreas.length}`,
+        `  Min Area:      ${allAreas.length ? Math.min(...allAreas).toFixed(1) : '—'}`,
+        `  Max Area:      ${allAreas.length ? Math.max(...allAreas).toFixed(1) : '—'}`,
+        `  Avg Area:      ${allAreas.length ? (allAreas.reduce((a,b) => a+b, 0) / allAreas.length).toFixed(1) : '—'}`,
+        `  Min W×H:       ${minW !== Infinity ? minW.toFixed(1) + '×' + minH.toFixed(1) : '—'}`,
+        `  Max W×H:       ${maxW > 0 ? maxW.toFixed(1) + '×' + maxH.toFixed(1) : '—'}`,
+        '───────────────────────────────────────────────',
+        `  EVENT LOG (${historyLog.length} entries, newest last)`,
+        '───────────────────────────────────────────────',
+        ...historyLog,
+        '═══════════════════════════════════════════════',
+      ].join('\n');
+
+      const doCopySuccess = () => {
+        showToast('✅ Log copied to clipboard!');
+        const btn = document.getElementById('copy-btn');
+        btn.classList.add('copied');
+        btn.textContent = '✅ COPIED!';
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.textContent = '📋 COPY LOG';
+        }, 2000);
+      };
+
+      const fallbackCopy = () => {
+        const ta = document.createElement('textarea');
+        ta.value = statsText;
+        // iOS styling requirements to allow selection
+        ta.contentEditable = 'true';
+        ta.readOnly = false;
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.opacity = '0.01'; // slightly visible so browser doesn't ignore it
+        ta.style.width = '100px';
+        ta.style.height = '100px';
+        document.body.appendChild(ta);
+        
+        // Select text for iOS/Android
+        const range = document.createRange();
+        range.selectNodeContents(ta);
+        const selection = window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        ta.focus();
+        ta.setSelectionRange(0, 999999);
+        
+        try {
+          const successful = document.execCommand('copy');
+          if (successful) {
+            doCopySuccess();
+          } else {
+            // If execCommand failed, show prompt to let user copy manually
+            window.prompt("Press Ctrl+C or Cmd+C to copy touch diagnostic logs:", statsText);
+            doCopySuccess();
+          }
+        } catch (err) {
+          window.prompt("Press Ctrl+C or Cmd+C to copy touch diagnostic logs:", statsText);
+          doCopySuccess();
+        }
+        
+        if (selection) {
+          selection.removeAllRanges();
+        }
+        document.body.removeChild(ta);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(statsText).then(() => {
+          doCopySuccess();
+        }).catch(() => {
+          fallbackCopy();
+        });
+      } else {
+        fallbackCopy();
+      }
+    });
+
+    // Clear button
+    document.getElementById('clear-btn').addEventListener('click', () => {
+      allAreas = [];
+      historyLog.length = 0;
+      minW = Infinity; minH = Infinity; maxW = 0; maxH = 0;
+      document.getElementById('stat-min-area').textContent = '—';
+      document.getElementById('stat-max-area').textContent = '—';
+      document.getElementById('stat-avg-area').textContent = '—';
+      document.getElementById('stat-samples').textContent = '0';
+      document.getElementById('stat-min-wh').textContent = '—';
+      document.getElementById('stat-max-wh').textContent = '—';
+      document.getElementById('history-panel').innerHTML = '';
+      contacts.clear();
+      renderContacts();
+      drawContacts();
+    });
+
+    // Initial draw
+    renderContacts();
+    drawContacts();
+  </script>
+</body>
+</html>

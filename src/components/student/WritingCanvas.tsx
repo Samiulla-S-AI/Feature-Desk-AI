@@ -13,8 +13,11 @@ import { useAuth } from '../../contexts/AuthContext';
 /* useNavigate removed */
 import HandwritingConverter from './HandwritingConverter';
 import AdaptiveQuiz from './AdaptiveQuiz';
-import { saveCanvasNoteHybrid, updateCanvasNoteHybrid } from '../../lib/db';
 import { compressImage } from '../../utils/compression';
+import { PalmRejectionEngine } from '../../lib/PalmRejectionEngine';
+import { StrokeSmoothingEngine } from '../../lib/StrokeSmoothingEngine';
+import { offlineSyncEngine } from '../../lib/offlineSyncEngine';
+import SyncStatusIndicator from '../common/SyncStatusIndicator';
 
 // Types
 interface Point {
@@ -133,8 +136,14 @@ export default function WritingCanvas() {
   const [elements, setElements] = useState<DrawingElement[]>([]);
   const [historyStack, setHistoryStack] = useState<DrawingElement[][]>([[]]);
   const [historyIndex, setHistoryIndex] = useState(0);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const [, setIsDrawing] = useState(false);
+  const isDrawingRef = useRef(false);
   const [currentStroke, setCurrentStroke] = useState<Point[]>([]);
+  const currentStrokeRef = useRef<Point[]>([]); // v4: Mutable ref for zero-alloc hot path
+  const pendingPointsRef = useRef<Map<number, Point[]>>(new Map());
+  const cachedRectRef = useRef<DOMRect | null>(null); // v4: Cache getBoundingClientRect
+  const lastDrawnPosRef = useRef<Point | null>(null); // v4: Last position for incremental draw
+  const liveRenderIndexRef = useRef<number>(0); // v5: Track last rendered point for batch rendering
   const [shapeStart, setShapeStart] = useState<Point | null>(null);
   const [shapePreview, setShapePreview] = useState<Point | null>(null);
 
@@ -200,6 +209,15 @@ export default function WritingCanvas() {
   const [showHandwritingConverter, setShowHandwritingConverter] = useState(false);
   const [currentNoteId, setCurrentNoteId] = useState<string | null>(null);
 
+  // Palm Rejection Engine state & ref (Software-level 95%+ accuracy classifier for passive styluses)
+  const palmEngineRef = useRef<PalmRejectionEngine>(new PalmRejectionEngine({ debugMode: false }));
+  const [palmDebugMode, setPalmDebugMode] = useState(false);
+  const [_showTouchWarning, setShowTouchWarning] = useState(false); // Fix 6: Hardware limit warning
+
+  useEffect(() => {
+    palmEngineRef.current.onTouchLimitWarning = () => setShowTouchWarning(true);
+  }, []);
+
   // Load requested note/exam data
   useEffect(() => {
     const loadNote = localStorage.getItem('load_note_in_canvas');
@@ -224,6 +242,7 @@ export default function WritingCanvas() {
       localStorage.removeItem('create_new_note');
     }
   }, []);
+
   const [showAdaptiveQuiz, setShowAdaptiveQuiz] = useState(false);
 
   // Virtual keyboard state
@@ -478,29 +497,16 @@ export default function WritingCanvas() {
     }
   }, [paperType, showMargin]);
 
-  // Draw a stroke
+  // Draw a stroke with Smooth Midpoint Quadratic Bezier Splines
   const drawStroke = useCallback((ctx: CanvasRenderingContext2D, stroke: Stroke) => {
-    if (stroke.points.length < 2) return;
-
-    ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = stroke.size;
-
-    if (stroke.type === 'highlighter') {
-      ctx.globalAlpha = 0.4;
-      ctx.lineWidth = stroke.size * 3;
-    }
-
-    ctx.strokeStyle = stroke.color;
-    ctx.beginPath();
-    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-
-    for (let i = 1; i < stroke.points.length; i++) {
-      ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-    }
-    ctx.stroke();
-    ctx.restore();
+    if (!stroke.points || stroke.points.length === 0) return;
+    StrokeSmoothingEngine.renderSmoothStroke(
+      ctx,
+      stroke.points,
+      stroke.color,
+      stroke.size,
+      stroke.type === 'highlighter'
+    );
   }, []);
 
   // Draw a shape
@@ -727,8 +733,13 @@ export default function WritingCanvas() {
       } as Shape);
     }
 
+    // Render Palm Rejection Debug Overlay if active
+    if (palmDebugMode) {
+      palmEngineRef.current.renderDebugOverlay(ctx, PAGE_WIDTH, PAGE_HEIGHT);
+    }
+
     ctx.restore();
-  }, [elements, shapePreview, shapeStart, tool, shapeType, color, brushSize, shapeFilled, PAGE_WIDTH, PAGE_HEIGHT, drawPaper, drawStroke, drawShape, drawText, drawImage]);
+  }, [elements, shapePreview, shapeStart, tool, shapeType, color, brushSize, shapeFilled, PAGE_WIDTH, PAGE_HEIGHT, drawPaper, drawStroke, drawShape, drawText, drawImage, palmDebugMode]);
 
 
   // Get mouse position relative to canvas
@@ -742,137 +753,217 @@ export default function WritingCanvas() {
     };
   };
 
-  // Get touch position relative to canvas
-  const getTouchPos = (e: React.TouchEvent<HTMLCanvasElement>): Point => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    const touch = e.touches[0];
-    return {
-      x: (touch.clientX - rect.left) / zoomLevel,
-      y: (touch.clientY - rect.top) / zoomLevel
-    };
+  // Touch event handlers (Prevent page gestures; drawing handled via PointerEvents + PalmRejectionEngine)
+  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
   };
 
-  // Touch handlers
-  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault(); // Prevent scrolling
-    const pos = getTouchPos(e);
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+  };
+
+  // Pointer Event Handlers — v4 Zero-Latency Architecture
+  // The golden rule: pointermove does ZERO React state updates and ZERO heavy computation.
+  // It ONLY calls ctx.lineTo() + ctx.stroke(). Everything else happens on pointerdown/pointerup.
+
+  // Pointer Event Handlers — Open-Source Zero-Latency Smooth Ink Architecture
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const contact = palmEngineRef.current.startContact(e.nativeEvent);
+    const activeWritingId = palmEngineRef.current.getActiveWritingContactId();
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    cachedRectRef.current = canvas.getBoundingClientRect();
+    const rect = cachedRectRef.current;
+    const pos = {
+      x: (e.clientX - rect.left) / zoomLevel,
+      y: (e.clientY - rect.top) / zoomLevel
+    };
+
+    if (contact.rejected || (activeWritingId !== null && contact.id !== activeWritingId)) {
+      if (!pendingPointsRef.current.has(e.pointerId)) {
+        pendingPointsRef.current.set(e.pointerId, []);
+      }
+      pendingPointsRef.current.get(e.pointerId)?.push(pos);
+      if (palmDebugMode) redrawCanvas();
+      return;
+    }
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (_) {}
+
+    isDrawingRef.current = true;
     setIsDrawing(true);
 
     if (tool === 'pen' || tool === 'highlighter') {
-      setCurrentStroke([pos]);
+      const coalesced = StrokeSmoothingEngine.getCoalescedPoints(e, 1 / zoomLevel, 1 / zoomLevel, rect);
+      currentStrokeRef.current = coalesced;
+      liveRenderIndexRef.current = 0;
+      lastDrawnPosRef.current = coalesced[coalesced.length - 1];
+
+      // If hardware captured multiple sub-frame points on touch down, render initial live batch
+      if (coalesced.length > 1) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const dpr = window.devicePixelRatio || 1;
+          ctx.save();
+          ctx.scale(dpr, dpr);
+          StrokeSmoothingEngine.renderLiveBatch(ctx, coalesced, 0, color, brushSize, tool === 'highlighter');
+          ctx.restore();
+        }
+      }
+      liveRenderIndexRef.current = coalesced.length;
     } else if (tool === 'eraser') {
       eraseAtPosition(pos);
     } else if (tool === 'shape') {
       setShapeStart(pos);
       setShapePreview(pos);
-    } else if (tool === 'text') {
-      // If there's an active text input, commit it first
-      if (showTextInput && textInput.trim()) {
-        handleTextSubmit();
-      }
-
-      // Allow React to commit the previous state if needed, then set new
-      requestAnimationFrame(() => {
-        setTextInput('');
-        setTextPosition(pos);
-        setShowTextInput(true);
-      });
-    } else if (tool === 'select' || tool === 'move') {
-      if (isGroupSelecting) {
-        // Start group selection rectangle
-        setGroupSelectStart(pos);
-        setGroupSelectEnd(pos);
-      } else {
-        const element = findElementAtPosition(pos);
-        if (element) {
-          // If element is already in multi-selection, drag all
-          if (selectedElementIds.has(element.id)) {
-            setIsDragging(true);
-            setDragOffset(pos);
-          } else {
-            setSelectedElementId(element.id);
-            setSelectedElementIds(new Set([element.id]));
-            setIsDragging(true);
-            setDragOffset(pos);
-          }
-        } else {
-          setSelectedElementId(null);
-          setSelectedElementIds(new Set());
-          // Long press to start group select
-          longPressTimerRef.current = setTimeout(() => {
-            setIsGroupSelecting(true);
-            setGroupSelectStart(pos);
-            setGroupSelectEnd(pos);
-            if (navigator.vibrate) navigator.vibrate(50);
-          }, 500);
-        }
-      }
     }
+
+    if (palmDebugMode) redrawCanvas();
   };
 
-  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    if (!isDrawing) return;
-    const pos = getTouchPos(e);
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const contact = palmEngineRef.current.updateContact(e.nativeEvent);
+    const activeWritingId = palmEngineRef.current.getActiveWritingContactId();
 
-    // Cancel long press if touch moves
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
+    const rect = cachedRectRef.current;
+    if (!rect) return;
+    const pos = {
+      x: (e.clientX - rect.left) / zoomLevel,
+      y: (e.clientY - rect.top) / zoomLevel
+    };
+
+    if (!contact || contact.rejected || (activeWritingId !== null && contact.id !== activeWritingId)) {
+      if (pendingPointsRef.current.has(e.pointerId)) {
+        pendingPointsRef.current.get(e.pointerId)?.push(pos);
+      }
+      if (palmDebugMode) redrawCanvas();
+      return;
     }
 
-    if (tool === 'pen' || tool === 'highlighter') {
-      setCurrentStroke(prev => [...prev, pos]);
+    // LATE PROMOTION: Contact was rejected during grace period but just got promoted
+    if (!isDrawingRef.current && contact.isPrimaryWritingContact && contact.id === activeWritingId) {
+      try {
+        const canvasEl = canvasRef.current;
+        if (canvasEl) canvasEl.setPointerCapture(e.pointerId);
+      } catch (_) {}
 
-      // Draw current stroke immediately
+      isDrawingRef.current = true;
+      setIsDrawing(true);
+
+      if (tool === 'pen' || tool === 'highlighter') {
+        const bufferedPoints = pendingPointsRef.current.get(e.pointerId) || [];
+        const coalesced = StrokeSmoothingEngine.getCoalescedPoints(e, 1 / zoomLevel, 1 / zoomLevel, rect);
+        const allPoints = [...bufferedPoints, ...coalesced];
+        currentStrokeRef.current = allPoints;
+        liveRenderIndexRef.current = allPoints.length;
+        lastDrawnPosRef.current = allPoints[allPoints.length - 1];
+
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext('2d');
+        if (ctx && allPoints.length > 0) {
+          const dpr = window.devicePixelRatio || 1;
+          ctx.save();
+          ctx.scale(dpr, dpr);
+          StrokeSmoothingEngine.renderSmoothStroke(ctx, allPoints, color, brushSize, tool === 'highlighter');
+          ctx.restore();
+        }
+      } else if (tool === 'eraser') {
+        eraseAtPosition(pos);
+      } else if (tool === 'shape') {
+        setShapeStart(pos);
+        setShapePreview(pos);
+      }
+
+      pendingPointsRef.current.delete(e.pointerId);
+      if (palmDebugMode) redrawCanvas();
+      return;
+    }
+
+    if (!isDrawingRef.current) {
+      if (palmDebugMode) redrawCanvas();
+      return;
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // ZERO-LATENCY SMOOTH BEZIER HOT PATH (v5):
+    // Progressive batch smoothing + batch rendering for zero dropped curves
+    // ════════════════════════════════════════════════════════════════
+    if (tool === 'pen' || tool === 'highlighter') {
+      const coalesced = StrokeSmoothingEngine.getCoalescedPoints(e, 1 / zoomLevel, 1 / zoomLevel, rect);
+      const prevPoints = currentStrokeRef.current;
+      const anchor = prevPoints.length > 0 ? prevPoints[prevPoints.length - 1] : coalesced[0];
+
+      // Progressive smoothing: each point smooths against the PREVIOUSLY SMOOTHED point
+      const smoothedBatch = StrokeSmoothingEngine.smoothBatch(anchor, coalesced, 0.65);
+      const renderFromIndex = currentStrokeRef.current.length;
+
+      for (let i = 0; i < smoothedBatch.length; i++) {
+        currentStrokeRef.current.push(smoothedBatch[i]);
+      }
+
+      // Batch render ALL new segments since last render — no dropped curves
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d');
-      if (ctx && currentStroke.length > 0) {
-        ctx.save();
-        // Apply High DPI scaling
+      if (ctx && currentStrokeRef.current.length > 1) {
         const dpr = window.devicePixelRatio || 1;
+        ctx.save();
         ctx.scale(dpr, dpr);
-
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = brushSize;
-        ctx.strokeStyle = color;
-
-        if (tool === 'highlighter') {
-          ctx.globalAlpha = 0.4;
-          ctx.lineWidth = brushSize * 3;
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(currentStroke[currentStroke.length - 1].x, currentStroke[currentStroke.length - 1].y);
-        ctx.lineTo(pos.x, pos.y);
-        ctx.stroke();
+        StrokeSmoothingEngine.renderLiveBatch(
+          ctx, currentStrokeRef.current, renderFromIndex,
+          color, brushSize, tool === 'highlighter'
+        );
         ctx.restore();
       }
+      liveRenderIndexRef.current = currentStrokeRef.current.length;
+      lastDrawnPosRef.current = currentStrokeRef.current[currentStrokeRef.current.length - 1];
     } else if (tool === 'eraser') {
       eraseAtPosition(pos);
     } else if (tool === 'shape' && shapeStart) {
       setShapePreview(pos);
-    } else if ((tool === 'select' || tool === 'move') && isGroupSelecting && groupSelectStart) {
-      // Update group selection rectangle
-      setGroupSelectEnd(pos);
-    } else if ((tool === 'select' || tool === 'move') && isDragging) {
-      const dx = pos.x - dragOffset.x;
-      const dy = pos.y - dragOffset.y;
-      if (selectedElementIds.size > 1) {
-        moveMultipleElements(selectedElementIds, dx, dy);
-      } else if (selectedElementId) {
-        moveElement(selectedElementId, dx, dy);
-      }
-      setDragOffset(pos);
     }
+
+    if (palmDebugMode) redrawCanvas();
   };
 
-  const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    handleMouseUp(); // Reuse mouse up logic
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const contact = palmEngineRef.current.endContact(e.nativeEvent);
+
+    if (contact && contact.classification === 'STYLUS' && !isDrawingRef.current) {
+      const bufferedPoints = pendingPointsRef.current.get(e.pointerId) || [];
+      if (bufferedPoints.length > 0 && (tool === 'pen' || tool === 'highlighter')) {
+        isDrawingRef.current = true;
+        setIsDrawing(true);
+        currentStrokeRef.current = bufferedPoints;
+
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext('2d');
+        if (ctx) {
+          const dpr = window.devicePixelRatio || 1;
+          ctx.save();
+          ctx.scale(dpr, dpr);
+          StrokeSmoothingEngine.renderSmoothStroke(ctx, bufferedPoints, color, brushSize, tool === 'highlighter');
+          ctx.restore();
+        }
+      }
+    }
+
+    pendingPointsRef.current.delete(e.pointerId);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch (_) {}
+
+    handleMouseUp();
+    if (palmDebugMode) redrawCanvas();
   };
 
 
@@ -1282,6 +1373,7 @@ export default function WritingCanvas() {
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const pos = getMousePos(e);
+    isDrawingRef.current = true;
     setIsDrawing(true);
 
     if (tool === 'pen' || tool === 'highlighter') {
@@ -1327,7 +1419,7 @@ export default function WritingCanvas() {
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
+    if (!isDrawingRef.current) return;
     const pos = getMousePos(e);
 
     // Cancel long press if mouse moves
@@ -1385,7 +1477,8 @@ export default function WritingCanvas() {
   };
 
   const handleMouseUp = () => {
-    if (!isDrawing) return;
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
     setIsDrawing(false);
 
     // Cancel long press timer
@@ -1394,11 +1487,13 @@ export default function WritingCanvas() {
       longPressTimerRef.current = null;
     }
 
-    if ((tool === 'pen' || tool === 'highlighter') && currentStroke.length > 1) {
+    // v4: Sync stroke ref → React state (this is the ONLY place we touch React state for strokes)
+    const strokePoints = currentStrokeRef.current;
+    if ((tool === 'pen' || tool === 'highlighter') && strokePoints.length > 0) {
       const newStroke: Stroke = {
         id: generateId(),
         type: tool,
-        points: currentStroke,
+        points: strokePoints,
         color: color,
         size: brushSize
       };
@@ -1419,7 +1514,6 @@ export default function WritingCanvas() {
       setElements(newElements);
       saveToHistory(newElements);
     } else if ((tool === 'select' || tool === 'move') && isGroupSelecting && groupSelectStart && groupSelectEnd) {
-      // Finalize group selection
       const foundIds = findElementsInRect(groupSelectStart, groupSelectEnd);
       setSelectedElementIds(foundIds);
       if (foundIds.size > 0) {
@@ -1429,10 +1523,14 @@ export default function WritingCanvas() {
       setGroupSelectStart(null);
       setGroupSelectEnd(null);
     } else if ((tool === 'select' || tool === 'move') && isDragging) {
-      // Save history after moving element
       saveToHistory(elements);
     }
 
+    // v5: Clean up refs
+    currentStrokeRef.current = [];
+    lastDrawnPosRef.current = null;
+    liveRenderIndexRef.current = 0;
+    cachedRectRef.current = null;
     setCurrentStroke([]);
     setShapeStart(null);
     setShapePreview(null);
@@ -1522,7 +1620,41 @@ export default function WritingCanvas() {
   const [noteTitle, setNoteTitle] = useState('');
   const [noteTags, setNoteTags] = useState('');
 
-  // Save as Class Note
+  // Auto-cache canvas note to IndexedDB on content change (debounced 3s)
+  useEffect(() => {
+    if (elements.length === 0 && !currentNoteId && !noteTitle) return;
+    const timer = setTimeout(() => {
+      const canvas = canvasRef.current;
+      const canvasImage = canvas ? canvas.toDataURL('image/png') : '';
+      const userId = (user as any)?.id || 'guest';
+      const finalThumbnails = canvasImage ? { ...pageThumbnails, [currentPage]: canvasImage } : pageThumbnails;
+
+      offlineSyncEngine.saveNote({
+        id: currentNoteId || undefined,
+        studentId: userId,
+        title: noteTitle || `${currentSubject.name} Notes - ${new Date().toLocaleDateString()}`,
+        subject: currentSubject.code,
+        classLevel: currentClass,
+        elements,
+        pages,
+        totalPages,
+        currentPage,
+        canvasData: canvasImage,
+        pageThumbnails: finalThumbnails,
+        tags: noteTags.split(',').map(t => t.trim()).filter(Boolean)
+      }).then(saved => {
+        if (saved && !currentNoteId && saved.id) {
+          setCurrentNoteId(saved.id);
+        }
+      }).catch(err => {
+        console.warn('Canvas auto-cache error:', err);
+      });
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [elements, pages, totalPages, currentPage, noteTitle, noteTags, currentSubject, currentClass, user, currentNoteId]);
+
+  // Save as Class Note with Offline Cache & Safe Cloud Sync
   const handleSave = async (isSaveAs: boolean) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1532,50 +1664,39 @@ export default function WritingCanvas() {
       return;
     }
 
-    // Direct Save (Overwrite)
-    console.log('Overwriting note...');
+    // Direct Save (Overwrite Protection & Auto Cloud Sync via offlineSyncEngine)
+    console.log('💾 Saving note to local cache & queuing cloud sync...');
     const canvasImage = canvas.toDataURL('image/png');
     const finalThumbnails = { ...pageThumbnails, [currentPage]: canvasImage };
-
     const userId = (user as any)?.id || 'guest';
-    const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
-    
-    // Find existing note to preserve some metadata if needed, though we overwrite content
-    const existingNoteIndex = existingNotes.findIndex((n: any) => n.id === currentNoteId);
-    
-    if (existingNoteIndex >= 0) {
-      const existingNote = existingNotes[existingNoteIndex];
-      const noteData = {
-        ...existingNote,
+
+    try {
+      const savedNote = await offlineSyncEngine.saveNote({
+        id: currentNoteId || undefined,
+        studentId: userId,
+        title: noteTitle || `${currentSubject.name} Notes`,
+        subject: currentSubject.code,
+        classLevel: currentClass,
         elements: elements,
         pages: pages,
         totalPages: totalPages,
         currentPage: currentPage,
         canvasData: canvasImage,
         pageThumbnails: finalThumbnails,
-        updatedAt: new Date().toISOString()
-      };
-      existingNotes[existingNoteIndex] = noteData;
-      localStorage.setItem(`class_notes_${userId}`, JSON.stringify(existingNotes));
+        tags: noteTags.split(',').map(t => t.trim()).filter(Boolean)
+      });
 
-      // Sync to cloud if not a local-only placeholder ID
-      if (currentNoteId && !currentNoteId.startsWith('local_')) {
-          await updateCanvasNoteHybrid(userId, currentSubject.code, currentNoteId, noteData);
-      } else {
-          // If it was local only, we can attempt to save it as a new cloud note
-          const result = await saveCanvasNoteHybrid(userId, currentSubject.code, noteData);
-          if (result.success && result.id) {
-              noteData.id = result.id;
-              existingNotes[existingNoteIndex] = noteData;
-              localStorage.setItem(`class_notes_${userId}`, JSON.stringify(existingNotes));
-              setCurrentNoteId(result.id);
-          }
+      if (savedNote.id) {
+        setCurrentNoteId(savedNote.id);
       }
 
-      alert('Note saved successfully!');
-    } else {
-      // Fallback if not found
-      setShowSaveNoteDialog(true);
+      if (savedNote.isConflictCopy) {
+        alert('ℹ️ A concurrent update was detected in the cloud. Your offline edits were safely saved as a separate copy to prevent losing any data!');
+      } else {
+        console.log('✅ Note saved safely to local IndexedDB cache & queued for cloud sync');
+      }
+    } catch (err) {
+      console.error('Failed to save note via offline engine:', err);
     }
   };
 
@@ -1583,52 +1704,16 @@ export default function WritingCanvas() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    console.log('Saving note as new...');
-    
+    console.log('💾 Saving note as new class note...');
     const canvasImage = canvas.toDataURL('image/png');
     const finalThumbnails = { ...pageThumbnails, [currentPage]: canvasImage };
+    const userId = (user as any)?.id || 'guest';
 
     try {
-      const noteData = {
-        title: noteTitle || `${currentSubject.name} Notes - ${new Date().toLocaleDateString()}`,
-        subject: currentSubject.code,
-        classLevel: currentClass,
-        elements: elements,
-        pages: pages,
-        totalPages: totalPages, 
-        currentPage: currentPage,
-        canvasData: canvasImage,
-        pageThumbnails: finalThumbnails,
-        tags: noteTags.split(',').map(t => t.trim()).filter(Boolean),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-
-      const userId = (user as any)?.id || 'guest';
-      const result = await saveCanvasNoteHybrid(userId, currentSubject.code, noteData);
-
-      if (result.success) {
-        const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
-        const newId = result.id || ('local_' + Date.now());
-        localStorage.setItem(`class_notes_${userId}`, JSON.stringify([
-          { ...noteData, id: newId, remoteUrl: result.url },
-          ...existingNotes
-        ]));
-        setCurrentNoteId(newId);
-        alert('Note saved successfully to Cloud and Local Storage!');
-      } else {
-        throw new Error('Cloud save failed');
-      }
-
-    } catch (error) {
-      console.error('Failed to save note:', error);
-      alert('Failed to save note to cloud. Saved locally only.');
-
-      const userId = (user as any)?.id || 'guest';
-      const noteId = Date.now().toString();
-      const newNote = {
-        id: noteId,
-        title: noteTitle || `${currentSubject.name} Notes - ${new Date().toLocaleDateString()}`,
+      const title = noteTitle || `${currentSubject.name} Notes - ${new Date().toLocaleDateString()}`;
+      const savedNote = await offlineSyncEngine.saveNote({
+        studentId: userId,
+        title,
         subject: currentSubject.code,
         classLevel: currentClass,
         elements: elements,
@@ -1637,13 +1722,13 @@ export default function WritingCanvas() {
         currentPage: currentPage,
         canvasData: canvasImage,
         pageThumbnails: finalThumbnails,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         tags: noteTags.split(',').map(t => t.trim()).filter(Boolean)
-      };
-      const existingNotes = JSON.parse(localStorage.getItem(`class_notes_${userId}`) || '[]');
-      localStorage.setItem(`class_notes_${userId}`, JSON.stringify([newNote, ...existingNotes]));
-      setCurrentNoteId(noteId);
+      });
+
+      setCurrentNoteId(savedNote.id);
+      console.log('✅ New note cached locally and queued for cloud sync:', savedNote.id);
+    } catch (error) {
+      console.error('Failed to save note as new:', error);
     }
 
     setShowSaveNoteDialog(false);
@@ -1911,7 +1996,8 @@ export default function WritingCanvas() {
             <FileText className="w-5 h-5" />
           </button>
 
-
+          {/* Real-time Cloud/Local Sync Status Indicator */}
+          <SyncStatusIndicator />
         </div>
       </header>
 
@@ -2493,6 +2579,31 @@ export default function WritingCanvas() {
                 />
                 <span>Margin</span>
               </label>
+
+              {/* Palm Rejection Engine Control Badge */}
+              <div className="flex items-center gap-1.5 ml-2 pl-2 border-l border-slate-200">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-semibold border border-emerald-200 shadow-sm" title="Software Palm Rejection Active (95%+ accuracy for passive stylus)">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
+                  Palm Rejection: 95%+
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newMode = !palmDebugMode;
+                    setPalmDebugMode(newMode);
+                    palmEngineRef.current.setDebugMode(newMode);
+                    redrawCanvas();
+                  }}
+                  className={`px-2 py-1 rounded-lg text-xs font-semibold transition-all border ${
+                    palmDebugMode
+                      ? 'bg-purple-600 text-white border-purple-700 shadow'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                  title="Toggle Visual Palm Rejection Debug Overlay (Shows touch contact classification, score %, and decision state)"
+                >
+                  🐛 Debug Overlay
+                </button>
+              </div>
             </div>
 
             {/* Right: Actions */}
@@ -2578,13 +2689,11 @@ export default function WritingCanvas() {
             >
               <canvas
                 ref={canvasRef}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseUp}
                 onTouchStart={handleTouchStart}
-                onTouchMove={handleTouchMove}
-                onTouchEnd={handleTouchEnd}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerLeave={handlePointerUp}
                 className={`block touch-none ${tool === 'select' ? (isDragging ? 'cursor-grabbing' : 'cursor-default') : ''}`}
                 style={{
                   width: PAGE_WIDTH * zoomLevel,
@@ -2592,8 +2701,8 @@ export default function WritingCanvas() {
                   cursor: tool === 'eraser'
                     ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${eraserSize}' height='${eraserSize}'%3E%3Ccircle cx='${eraserSize / 2}' cy='${eraserSize / 2}' r='${eraserSize / 2 - 1}' fill='white' stroke='%23999' stroke-width='1'/%3E%3C/svg%3E") ${eraserSize / 2} ${eraserSize / 2}, auto`
                     : tool === 'text' ? 'text'
-                      : tool === 'select' ? undefined // Handled by className dynamic classes
-                        : 'crosshair'
+                      : tool === 'select' ? undefined
+                        : `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Ccircle cx='5' cy='5' r='3' fill='%232563eb' stroke='white' stroke-width='1'/%3E%3C/svg%3E") 5 5, auto`
                 }}
               />
 

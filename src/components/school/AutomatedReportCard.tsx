@@ -14,6 +14,8 @@ import {
     Target,
     Users
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 interface StudentData {
     id: string;
@@ -267,9 +269,6 @@ export default function AutomatedReportCard({
 
     const handleDownloadPDF = async () => {
         try {
-            const jsPDF = (await import('jspdf')).default;
-            const html2canvas = (await import('html2canvas')).default;
-
             if (!reportRef.current) return;
 
             const canvas = await html2canvas(reportRef.current, {

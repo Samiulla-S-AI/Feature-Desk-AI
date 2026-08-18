@@ -23,11 +23,13 @@ import {
 import { getPendingResults, getPublishedResults, approveGrade, saveQuestionFeedback, StudentResult } from '../../lib/teacherDb';
 
 
-import { gradeImageAnswerWithRubric, generatePersonalizedFeedback, generateImageForQuestion } from '../../lib/teacherAI';
+import { gradeImageAnswerWithRubric, generatePersonalizedFeedback, generateImageForQuestion, generateSimpleMathExplanation } from '../../lib/teacherAI';
 import { cloudinaryService } from '../../lib/cloudinaryService';
 import { sendGradeReportNotification, QuestionFeedback } from '../../lib/notificationService';
 import MarkdownRenderer from '../common/MarkdownRenderer';
 import { supabase } from '../../lib/supabase';
+import { firestoreService } from '../../lib/firebaseService';
+import { createAdaptiveQuizRecommendation } from '../../lib/adaptiveQuizService';
 
 interface GradingCenterProps {
     classId?: number;
@@ -54,12 +56,40 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
     const [customFeedback, setCustomFeedback] = useState<Record<string, string>>({});
     const [combiningId, setCombiningId] = useState<string | null>(null);
     const [generatingImageFor, setGeneratingImageFor] = useState<string | null>(null);
+    const [generatingMathFor, setGeneratingMathFor] = useState<string | null>(null);
 
     // Question-level grading
     const [submissionDetails, setSubmissionDetails] = useState<Record<string, SubmissionQuestion[]>>({});
     const [viewingSubmission, setViewingSubmission] = useState<string | null>(null);
     // Combined answer sheet preview
     const [combinedSheetPreview, setCombinedSheetPreview] = useState<Record<string, string>>({});
+    // Feedback view mode per question/overall (edit vs preview rendered markdown)
+    const [feedbackMode, setFeedbackMode] = useState<Record<string, 'edit' | 'preview'>>({});
+
+    const handleGenerateMathExplanation = async (resultId: string, questionId: string, questionText: string, answerText: string, mode: 'ELI5' | 'ELI9') => {
+        const key = `${resultId}-${questionId}`;
+        setGeneratingMathFor(key);
+        try {
+            const mathFeedback = await generateSimpleMathExplanation(questionText, answerText, mode);
+            setSubmissionDetails(prev => {
+                const questions = prev[resultId] || [];
+                const updated = questions.map(q => {
+                    if (q.questionId === questionId) {
+                        const existing = q.suggestion?.trim() ? `${q.suggestion}\n\n` : '';
+                        return { ...q, suggestion: `${existing}${mathFeedback}` };
+                    }
+                    return q;
+                });
+                return { ...prev, [resultId]: updated };
+            });
+            setFeedbackMode(prev => ({ ...prev, [key]: 'preview' }));
+        } catch (err) {
+            console.error('Failed to generate math feedback:', err);
+            alert('Failed to generate math explanation.');
+        } finally {
+            setGeneratingMathFor(null);
+        }
+    };
 
 
     useEffect(() => {
@@ -82,15 +112,14 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
         // Load details for the active tab's results
         const activeResults = activeTab === 'pending' ? pending : published;
         for (const result of activeResults) {
-            await loadSubmissionDetails(result.id);
+            await loadSubmissionDetails(result.id, result.assessment_id);
         }
         setLoading(false);
     };
 
-    const loadSubmissionDetails = async (resultId: string): Promise<SubmissionQuestion[] | undefined> => {
+    const loadSubmissionDetails = async (resultId: string, assessmentId?: string): Promise<SubmissionQuestion[] | undefined> => {
         try {
             // 1. Fetch from Supabase student_answers table
-            const { supabase } = await import('../../lib/supabase');
             const { data: supaAnswers, error } = await supabase
                 .from('student_answers')
                 .select(`
@@ -137,6 +166,8 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                 console.warn('Could not load overall feedback overlay:', err);
             }
 
+            let loadedQuestions: SubmissionQuestion[] = [];
+
             if (supaAnswers && supaAnswers.length > 0) {
                 // 2. Check for Cloudinary External Reference
                 const firstAnswer = supaAnswers[0]?.student_answer || '';
@@ -149,13 +180,54 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                         const fullSubmission = await response.json();
 
                         if (fullSubmission) {
-                            const questions: SubmissionQuestion[] = [];
                             const cloudQuestions = fullSubmission.questions || [];
-
-                            // Filter database student_answers to only those with valid question references
                             const validSupaAnswers = supaAnswers.filter((sa: any) => sa.question_id);
 
-                            if (validSupaAnswers.length > 0) {
+                            if (cloudQuestions.length > 0) {
+                                // Iterate over ALL questions defined in the assessment (includes unanswered ones)
+                                cloudQuestions.forEach((cloudQ: any, index: number) => {
+                                    const qId = String(cloudQ.id);
+                                    const sa = validSupaAnswers.find((s: any) => String(s.question_id) === qId);
+
+                                    let rawAns = fullSubmission.answers?.[qId];
+                                    if (rawAns === undefined || rawAns === null) {
+                                        rawAns = fullSubmission.answers?.[String(index)];
+                                    }
+                                    if (rawAns === undefined || rawAns === null) {
+                                        rawAns = fullSubmission.answers?.[String(index + 1)];
+                                    }
+                                    if ((rawAns === undefined || rawAns === null) && sa) {
+                                        rawAns = sa.student_answer ? sa.student_answer.replace(/\[CLOUDINARY_URL\]:.*?\|\|\|/, '').replace(/\[FIREBASE_URL\]:.*?\|\|\|/, '') : '';
+                                    }
+
+                                    let ansStr = '';
+                                    if (rawAns !== null && rawAns !== undefined) {
+                                        if (typeof rawAns === 'object') {
+                                            const str = JSON.stringify(rawAns);
+                                            ansStr = (str === '{}' || str === '[]') ? '' : str;
+                                        } else {
+                                            ansStr = String(rawAns);
+                                            if (ansStr === '{}' || ansStr === '[]') ansStr = '';
+                                        }
+                                    }
+
+                                    const savedF = savedFeedbackArray.find((sf: any) =>
+                                        String(sf.questionId) === qId ||
+                                        sf.questionNumber === (index + 1)
+                                    );
+
+                                    loadedQuestions.push({
+                                        questionId: qId,
+                                        questionText: cloudQ.text || cloudQ.questionText || cloudQ.question || sa?.assessment_questions?.question_text || `Question ${index + 1}`,
+                                        answer: ansStr,
+                                        marks: cloudQ.marks || sa?.assessment_questions?.marks || 5,
+                                        allocatedMarks: savedF?.marksAwarded ?? sa?.marks_awarded ?? 0,
+                                        suggestion: savedF?.feedback || sa?.ai_feedback || '',
+                                        isDrawing: ansStr.includes('[DRAWING]:'),
+                                        feedbackImageUrl: savedF?.feedbackImage || sa?.feedback_image_url
+                                    });
+                                });
+                            } else if (validSupaAnswers.length > 0) {
                                 validSupaAnswers.forEach((sa: any, idx: number) => {
                                     const qId = sa.question_id;
                                     let rawAns = fullSubmission.answers?.[qId];
@@ -174,62 +246,22 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                                         }
                                     }
 
-                                    const cloudQ = cloudQuestions.find((cq: any) => String(cq.id) === String(qId));
-                                    
-                                    const savedF = savedFeedbackArray.find((sf: any) => 
-                                        String(sf.questionId) === String(qId) || 
+                                    const savedF = savedFeedbackArray.find((sf: any) =>
+                                        String(sf.questionId) === String(qId) ||
                                         sf.questionNumber === (idx + 1)
                                     );
 
-                                    questions.push({
+                                    loadedQuestions.push({
                                         questionId: qId,
-                                        questionText: sa.assessment_questions?.question_text || cloudQ?.text || `Question`,
+                                        questionText: sa.assessment_questions?.question_text || `Question ${idx + 1}`,
                                         answer: ansStr,
-                                        marks: sa.assessment_questions?.marks || cloudQ?.marks || 5,
+                                        marks: sa.assessment_questions?.marks || 5,
                                         allocatedMarks: savedF?.marksAwarded ?? sa.marks_awarded ?? 0,
                                         suggestion: savedF?.feedback || sa.ai_feedback || '',
                                         isDrawing: ansStr.includes('[DRAWING]:'),
                                         feedbackImageUrl: savedF?.feedbackImage || sa.feedback_image_url
                                     });
                                 });
-                            } else if (cloudQuestions.length > 0) {
-                                cloudQuestions.forEach((cloudQ: any, index: number) => {
-                                    const qId = String(cloudQ.id);
-                                    const rawAns = fullSubmission.answers?.[qId] !== undefined ? fullSubmission.answers[qId] : '';
-                                    const meta = supaAnswers.find((sa: any) => String(sa.question_id) === qId);
-
-                                    let ansStr = '';
-                                    if (rawAns !== null && rawAns !== undefined) {
-                                        if (typeof rawAns === 'object') {
-                                            const str = JSON.stringify(rawAns);
-                                            ansStr = (str === '{}' || str === '[]') ? '' : str;
-                                        } else {
-                                            ansStr = String(rawAns);
-                                            if (ansStr === '{}' || ansStr === '[]') ansStr = '';
-                                        }
-                                    }
-
-                                    const savedF = savedFeedbackArray.find((sf: any) => 
-                                        String(sf.questionId) === qId || 
-                                        sf.questionNumber === (index + 1)
-                                    );
-
-                                    questions.push({
-                                        questionId: qId,
-                                        questionText: cloudQ.text || 'Question',
-                                        answer: ansStr,
-                                        marks: cloudQ.marks || 5,
-                                        allocatedMarks: savedF?.marksAwarded ?? meta?.marks_awarded ?? 0,
-                                        suggestion: savedF?.feedback || meta?.ai_feedback || '',
-                                        isDrawing: ansStr.includes('[DRAWING]:'),
-                                        feedbackImageUrl: savedF?.feedbackImage || meta?.feedback_image_url
-                                    });
-                                });
-                            }
-
-                            if (questions.length > 0) {
-                                setSubmissionDetails(prev => ({ ...prev, [resultId]: questions }));
-                                return questions;
                             }
                         }
                     } catch (cloudinaryError) {
@@ -237,33 +269,84 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
                     }
                 }
 
-                // 3. Normal Supabase Mapping
-                const questions: SubmissionQuestion[] = supaAnswers.map((a: any, index: number) => {
-                    let ansStr = a.student_answer ? a.student_answer.replace(/\[CLOUDINARY_URL\]:.*?\|\|\|/, '').replace(/\[FIREBASE_URL\]:.*?\|\|\|/, '') : '';
-                    if (ansStr === '{}' || ansStr === '[]') {
-                        ansStr = '';
-                    }
+                if (loadedQuestions.length === 0) {
+                    // 3. Normal Supabase Mapping
+                    loadedQuestions = supaAnswers.map((a: any, index: number) => {
+                        let ansStr = a.student_answer ? a.student_answer.replace(/\[CLOUDINARY_URL\]:.*?\|\|\|/, '').replace(/\[FIREBASE_URL\]:.*?\|\|\|/, '') : '';
+                        if (ansStr === '{}' || ansStr === '[]') {
+                            ansStr = '';
+                        }
 
-                    const qId = a.question_id || a.id;
-                    const savedF = savedFeedbackArray.find((sf: any) => 
-                        String(sf.questionId) === String(qId) || 
-                        sf.questionNumber === (index + 1)
-                    );
+                        const qId = a.question_id || a.id;
+                        const savedF = savedFeedbackArray.find((sf: any) =>
+                            String(sf.questionId) === String(qId) ||
+                            sf.questionNumber === (index + 1)
+                        );
 
-                    return {
-                        questionId: qId,
-                        questionText: a.assessment_questions?.question_text || 'Question',
-                        answer: ansStr,
-                        marks: a.assessment_questions?.marks || 5,
-                        allocatedMarks: savedF?.marksAwarded ?? a.marks_awarded ?? 0,
-                        suggestion: savedF?.feedback || a.ai_feedback || '',
-                        isDrawing: ansStr.includes('[DRAWING]:') || false,
-                        feedbackImageUrl: savedF?.feedbackImage || a.feedback_image_url
-                    };
-                });
+                        return {
+                            questionId: qId,
+                            questionText: a.assessment_questions?.question_text || 'Question',
+                            answer: ansStr,
+                            marks: a.assessment_questions?.marks || 5,
+                            allocatedMarks: savedF?.marksAwarded ?? a.marks_awarded ?? 0,
+                            suggestion: savedF?.feedback || a.ai_feedback || '',
+                            isDrawing: ansStr.includes('[DRAWING]:') || false,
+                            feedbackImageUrl: savedF?.feedbackImage || a.feedback_image_url
+                        };
+                    });
+                }
+            }
 
-                setSubmissionDetails(prev => ({ ...prev, [resultId]: questions }));
-                return questions;
+            // 4. Fill in any missing questions from assessment_questions table if available
+            let targetAssessmentId = assessmentId;
+            if (!targetAssessmentId) {
+                const { data: subData } = await supabase
+                    .from('exam_submissions')
+                    .select('assessment_id')
+                    .eq('id', resultId)
+                    .maybeSingle();
+                targetAssessmentId = subData?.assessment_id;
+            }
+
+            if (targetAssessmentId) {
+                const { data: dbQuestions } = await supabase
+                    .from('assessment_questions')
+                    .select('*')
+                    .eq('assessment_id', targetAssessmentId)
+                    .order('question_number');
+
+                if (dbQuestions && dbQuestions.length > 0) {
+                    dbQuestions.forEach((dbQ: any, idx: number) => {
+                        const exists = loadedQuestions.some((q, i) =>
+                            String(q.questionId) === String(dbQ.id) ||
+                            q.questionText === dbQ.question_text ||
+                            i === (dbQ.question_number - 1)
+                        );
+
+                        if (!exists) {
+                            const savedF = savedFeedbackArray.find((sf: any) =>
+                                String(sf.questionId) === String(dbQ.id) ||
+                                sf.questionNumber === (dbQ.question_number || idx + 1)
+                            );
+
+                            loadedQuestions.push({
+                                questionId: String(dbQ.id),
+                                questionText: dbQ.question_text || `Question ${dbQ.question_number || idx + 1}`,
+                                answer: '',
+                                marks: dbQ.marks || 5,
+                                allocatedMarks: savedF?.marksAwarded ?? 0,
+                                suggestion: savedF?.feedback || '',
+                                isDrawing: false,
+                                feedbackImageUrl: savedF?.feedbackImage
+                            });
+                        }
+                    });
+                }
+            }
+
+            if (loadedQuestions.length > 0) {
+                setSubmissionDetails(prev => ({ ...prev, [resultId]: loadedQuestions }));
+                return loadedQuestions;
             }
 
             // Fallback: Check for Quiz Result JSON answers
@@ -634,9 +717,11 @@ export default function GradingCenter({ classId }: GradingCenterProps) {
 
             // Build context showing all questions and their marks
             const questionsContext = questions.map((q, i) => {
-                const hasText = q.answer && !q.answer.includes('[DRAWING]:') || q.answer.includes('|||[TEXT]:');
-                const hasDraw = q.answer.includes('[DRAWING]:');
-                return `Q${i + 1} (${q.marks} marks): ${q.questionText} [Answer type: ${hasDraw ? 'Handwritten' : ''}${hasText && hasDraw ? ' + ' : ''}${hasText ? 'Typed text' : ''}]`;
+                const isUnanswered = !q.answer || q.answer.trim() === '';
+                const hasText = q.answer && (!q.answer.includes('[DRAWING]:') || q.answer.includes('|||[TEXT]:'));
+                const hasDraw = q.answer && q.answer.includes('[DRAWING]:');
+                const answerType = isUnanswered ? 'Unanswered / Blank' : `${hasDraw ? 'Handwritten' : ''}${hasText && hasDraw ? ' + ' : ''}${hasText ? 'Typed text' : ''}`;
+                return `Q${i + 1} (${q.marks} marks): ${q.questionText} [Status: ${answerType}]`;
             }).join('\n');
 
             const rubric = [
@@ -664,9 +749,10 @@ ${questionsContext}
 
 RULES:
 - Look for BOTH typed text AND handwritten content in the image
+- If a question status is "Unanswered / Blank" or no answer is written on the sheet for that question, set score to 0, state clearly that it was unanswered, and give the correct answer with buddy encouragement
 - Each question has marks shown in the blue header
 - Total marks: ${result.total_marks}
-- In your breakdown array, include ONE entry per question
+- In your breakdown array, include ONE entry per question (Q1, Q2, Q3, etc.)
 - Each breakdown entry: { "criteria": "Q1", "score": marks_awarded, "maxScore": question_total_marks, "feedback": "📸 I see... ❓ This asked... ✏️ You tried... ✅ Answer is... 💬 Great job / Here's a tip..." }
 - Use SIMPLE words — no big academic jargon!
 - Be concise but helpful
@@ -833,7 +919,6 @@ RULES:
 
                 // SAVE TO FIREBASE (Detailed Per-Student Feedback)
                 try {
-                    const { firestoreService } = await import('../../lib/firebaseService');
                     await firestoreService.saveStudentFeedback(result.student_id, {
                         examId: result.assessment_id || result.id || '',
                         examTitle: result.quiz_title || '',
@@ -875,7 +960,6 @@ RULES:
                     console.log(`📋 Question feedback included: ${questionFeedback.length} questions`);
 
                     if (weakConcepts.length > 0) {
-                        const { createAdaptiveQuizRecommendation } = await import('../../lib/adaptiveQuizService');
                         await createAdaptiveQuizRecommendation(
                             result.student_id,
                             result.assessment_id || result.id || '',
@@ -1359,17 +1443,93 @@ RULES:
 
                                                             {/* Feedback Control */}
                                                             <div className="flex-1 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col">
-                                                                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-3">
-                                                                    <MessageSquare className="w-4 h-4 text-purple-500" />
-                                                                    {activeTab === 'pending' ? 'Feedback' : 'Dispatched Feedback'}
-                                                                </label>
+                                                                <div className="flex items-center justify-between mb-3">
+                                                                    <label className="flex items-center gap-2 text-sm font-bold text-slate-700">
+                                                                        <MessageSquare className="w-4 h-4 text-purple-500" />
+                                                                        {activeTab === 'pending' ? 'Feedback' : 'Dispatched Feedback'}
+                                                                    </label>
+                                                                    {activeTab === 'pending' && (
+                                                                        <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-xs font-semibold">
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => setFeedbackMode(prev => ({ ...prev, [`${result.id}-${question.questionId}`]: 'preview' }))}
+                                                                                className={`px-2.5 py-1 rounded-md transition-all ${
+                                                                                    (feedbackMode[`${result.id}-${question.questionId}`] || 'preview') === 'preview'
+                                                                                        ? 'bg-white text-purple-700 shadow-sm font-bold'
+                                                                                        : 'text-slate-500 hover:text-slate-700'
+                                                                                }`}
+                                                                            >
+                                                                                👁️ Preview
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => setFeedbackMode(prev => ({ ...prev, [`${result.id}-${question.questionId}`]: 'edit' }))}
+                                                                                className={`px-2.5 py-1 rounded-md transition-all ${
+                                                                                    feedbackMode[`${result.id}-${question.questionId}`] === 'edit'
+                                                                                        ? 'bg-white text-slate-800 shadow-sm font-bold'
+                                                                                        : 'text-slate-500 hover:text-slate-700'
+                                                                                }`}
+                                                                            >
+                                                                                ✏️ Edit
+                                                                            </button>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+
+                                                                {/* Math Explanation Helper Presets (ELI5 / ELI9) */}
+                                                                {activeTab === 'pending' && (
+                                                                    <div className="mb-3 p-2 bg-gradient-to-r from-purple-50 via-indigo-50 to-blue-50 border border-purple-100 rounded-xl flex flex-wrap items-center justify-between gap-1.5 text-xs">
+                                                                        <span className="font-bold text-purple-900 flex items-center gap-1 text-[11px]">
+                                                                            <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                                                                            Math Explanation Helper:
+                                                                        </span>
+                                                                        <div className="flex flex-wrap items-center gap-1">
+                                                                            <button
+                                                                                type="button"
+                                                                                disabled={generatingMathFor === `${result.id}-${question.questionId}`}
+                                                                                onClick={() => handleGenerateMathExplanation(result.id, question.questionId, question.questionText, question.answer, 'ELI5')}
+                                                                                className="px-2 py-1 bg-white hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg font-bold text-[10px] flex items-center gap-1 transition-all shadow-2xs disabled:opacity-50"
+                                                                                title="Explain Like I'm 5 (Super simple real-life analogy with emojis)"
+                                                                            >
+                                                                                <span>🎈 ELI5 (Analogy)</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                disabled={generatingMathFor === `${result.id}-${question.questionId}`}
+                                                                                onClick={() => handleGenerateMathExplanation(result.id, question.questionId, question.questionText, question.answer, 'ELI9')}
+                                                                                className="px-2 py-1 bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg font-bold text-[10px] flex items-center gap-1 transition-all shadow-2xs disabled:opacity-50"
+                                                                                title="Explain Like I'm 9 (Step-by-step math logic with formulas)"
+                                                                            >
+                                                                                <span>💡 ELI9 (Steps)</span>
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => {
+                                                                                    const mathTemplate = `\n\n**📐 Math Steps:**\n\\(x = \\dots\\)\n- Step 1: Simplify formula\n- Step 2: Calculate result`;
+                                                                                    updateQuestionSuggestion(result.id, question.questionId, (question.suggestion || '') + mathTemplate);
+                                                                                    setFeedbackMode(prev => ({ ...prev, [`${result.id}-${question.questionId}`]: 'edit' }));
+                                                                                }}
+                                                                                className="px-2 py-1 bg-white hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-bold text-[10px] flex items-center gap-1 transition-all shadow-2xs"
+                                                                                title="Insert LaTeX formula template \(x = \dots\)"
+                                                                            >
+                                                                                <span>📐 Formula</span>
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                                 {activeTab === 'pending' ? (
-                                                                    <textarea
-                                                                        value={question.suggestion}
-                                                                        onChange={(e) => updateQuestionSuggestion(result.id, question.questionId, e.target.value)}
-                                                                        placeholder="Write constructive feedback here..."
-                                                                        className="flex-1 w-full min-h-[120px] bg-slate-50 border-0 rounded-xl p-3 text-sm text-slate-700 placeholder:text-slate-400 focus:ring-2 focus:ring-purple-100 focus:bg-white transition-all resize-vertical"
-                                                                    />
+                                                                    feedbackMode[`${result.id}-${question.questionId}`] === 'edit' ? (
+                                                                        <textarea
+                                                                            value={question.suggestion}
+                                                                            onChange={(e) => updateQuestionSuggestion(result.id, question.questionId, e.target.value)}
+                                                                            placeholder="Write constructive feedback here (Markdown supported)..."
+                                                                            className="flex-1 w-full min-h-[120px] bg-slate-50 border-0 rounded-xl p-3 text-slate-700 placeholder:text-slate-400 focus:ring-2 focus:ring-purple-100 focus:bg-white transition-all resize-vertical leading-relaxed font-mono text-xs"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="flex-1 w-full bg-slate-50/80 border border-slate-200 rounded-xl p-4 overflow-y-auto min-h-[130px] max-h-[220px]">
+                                                                            <MarkdownRenderer content={question.suggestion || '*No feedback provided yet. Click Edit to type or run Auto-Grade with AI.*'} />
+                                                                        </div>
+                                                                    )
                                                                 ) : (
                                                                     <div className="flex-1 w-full bg-slate-50/80 border border-slate-100 rounded-xl p-4 overflow-y-auto custom-scrollbar">
                                                                         <MarkdownRenderer content={question.suggestion || '*No feedback provided*'} />
@@ -1514,20 +1674,54 @@ RULES:
                                         )}
 
 
-                                        {/* Overall Comments Section (Optional if needed) */}
+                                        {/* Overall Comments Section */}
                                         <div className="mt-8 bg-white p-6 rounded-3xl border border-slate-200">
-                                            <label className="text-sm font-bold text-slate-700 mb-3 block">Overall Final Comments</label>
+                                            <div className="flex items-center justify-between mb-3">
+                                                <label className="text-sm font-bold text-slate-700 block">Overall Final Comments</label>
+                                                {activeTab === 'pending' && (
+                                                    <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-xs font-semibold">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setFeedbackMode(prev => ({ ...prev, [`${result.id}-overall`]: 'preview' }))}
+                                                            className={`px-2.5 py-1 rounded-md transition-all ${
+                                                                (feedbackMode[`${result.id}-overall`] || 'preview') === 'preview'
+                                                                    ? 'bg-white text-blue-700 shadow-sm font-bold'
+                                                                    : 'text-slate-500 hover:text-slate-700'
+                                                            }`}
+                                                        >
+                                                            👁️ Preview
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setFeedbackMode(prev => ({ ...prev, [`${result.id}-overall`]: 'edit' }))}
+                                                            className={`px-2.5 py-1 rounded-md transition-all ${
+                                                                feedbackMode[`${result.id}-overall`] === 'edit'
+                                                                    ? 'bg-white text-slate-800 shadow-sm font-bold'
+                                                                    : 'text-slate-500 hover:text-slate-700'
+                                                            }`}
+                                                        >
+                                                            ✏️ Edit
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
                                             {activeTab === 'pending' ? (
-                                                <textarea
-                                                    value={customFeedback[result.id] || ''}
-                                                    onChange={(e) => setCustomFeedback(prev => ({ ...prev, [result.id]: e.target.value }))}
-                                                    className="w-full bg-slate-50 rounded-xl p-4 border border-slate-200 focus:ring-2 focus:ring-blue-100 outline-none"
-                                                    rows={3}
-                                                    placeholder="Add a final personal note to the student..."
-                                                />
+                                                feedbackMode[`${result.id}-overall`] === 'edit' ? (
+                                                    <textarea
+                                                        value={customFeedback[result.id] || ''}
+                                                        onChange={(e) => setCustomFeedback(prev => ({ ...prev, [result.id]: e.target.value }))}
+                                                        className="w-full bg-slate-50 rounded-xl p-4 border border-slate-200 focus:ring-2 focus:ring-blue-100 outline-none font-mono text-xs leading-relaxed"
+                                                        rows={3}
+                                                        placeholder="Add a final personal note to the student (Markdown supported)..."
+                                                    />
+                                                ) : (
+                                                    <div className="w-full bg-slate-50 rounded-xl p-4 border border-slate-200 text-slate-700 min-h-[90px]">
+                                                        <MarkdownRenderer content={customFeedback[result.id] || '*No overall comment added yet.*'} />
+                                                    </div>
+                                                )
                                             ) : (
-                                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-slate-700 italic">
-                                                    {result.feedback || customFeedback[result.id] || 'No additional comments provided.'}
+                                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-slate-700">
+                                                    <MarkdownRenderer content={result.feedback || customFeedback[result.id] || '*No additional comments provided.*'} />
                                                 </div>
                                             )}
                                         </div>

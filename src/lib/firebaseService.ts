@@ -1,6 +1,6 @@
 
 import { db } from './firebase';
-import { collection, addDoc, query, where, orderBy, getDocs, onSnapshot, limit } from 'firebase/firestore';
+import { collection, addDoc, query, where, orderBy, getDocs, onSnapshot, limit, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 
 // ===================================================================
 // Firebase Firestore Service (Chat History ONLY)
@@ -38,7 +38,6 @@ export const firestoreService = {
      */
     async updateSessionTitle(sessionId: string, newTitle: string): Promise<void> {
         try {
-            const { doc, updateDoc } = await import('firebase/firestore');
             const sessionRef = doc(db, 'chat_sessions', sessionId);
             await updateDoc(sessionRef, { title: newTitle });
         } catch (error) {
@@ -86,7 +85,6 @@ export const firestoreService = {
 
             // Update session lastMessageAt if sessionId is provided
             if (sessionId) {
-                const { doc, updateDoc } = await import('firebase/firestore');
                 const sessionRef = doc(db, 'chat_sessions', sessionId);
                 try {
                     await updateDoc(sessionRef, {
@@ -263,7 +261,6 @@ export const firestoreService = {
      */
     async deleteSchoolNote(noteId: string): Promise<void> {
         try {
-            const { doc, deleteDoc } = await import('firebase/firestore');
             const noteRef = doc(db, 'school_notes', noteId);
             await deleteDoc(noteRef);
             console.log('✅ School note deleted from Firestore:', noteId);

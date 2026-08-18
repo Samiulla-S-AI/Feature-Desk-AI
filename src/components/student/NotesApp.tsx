@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Trash2, Edit3, Plus, FileText, Search, BookOpen, Calendar, Tag, Clock, ExternalLink, RefreshCw, Eye, Image as ImageIcon } from 'lucide-react';
+import { ArrowLeft, Trash2, Edit3, Plus, FileText, Search, BookOpen, Calendar, Tag, Clock, ExternalLink, RefreshCw, Image as ImageIcon, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { fetchCanvasNotesHybrid } from '../../lib/db';
 import { firestoreService } from '../../lib/firebaseService';
+import { offlineSyncEngine, CachedNote } from '../../lib/offlineSyncEngine';
+import SyncStatusIndicator from '../common/SyncStatusIndicator';
 import PDFViewer from '../common/PDFViewer';
 import { renderMarkdown } from '../../utils/markdown';
 
-interface ClassNote {
+interface ClassNote extends Partial<CachedNote> {
   id: string;
   title: string;
   subject: string;
@@ -80,19 +82,25 @@ export default function NotesApp() {
     return () => clearInterval(interval);
   }, [user]);
 
-  // Load saved notes from localStorage
+  // Load notes from local IndexedDB cache instantly on mount & listen to engine changes
   useEffect(() => {
-    const savedNotes = localStorage.getItem(`class_notes_${(user as any)?.id || 'guest'}`);
-    if (savedNotes) {
-      setNotes(JSON.parse(savedNotes));
-    } else {
+    const loadNotesFromEngine = async () => {
+      const userId = (user as any)?.id || 'guest';
+      const cached = await offlineSyncEngine.getAllNotes(userId);
+      setNotes(cached as ClassNote[]);
+    };
 
-      // Demo notes
-      setNotes([]);
-    }
+    loadNotesFromEngine();
+
+    // Re-load when offline sync engine triggers updates (e.g. cloud sync completes or status changes)
+    const unsubscribe = offlineSyncEngine.subscribe(() => {
+      loadNotesFromEngine();
+    });
+
+    return () => unsubscribe();
   }, [user]);
 
-  // Sync with cloud on mount
+  // Background Cloud Sync on mount
   useEffect(() => {
     const syncNotesFromCloud = async () => {
       const userId = (user as any)?.id;
@@ -102,17 +110,27 @@ export default function NotesApp() {
       try {
         const cloudNotes = await fetchCanvasNotesHybrid(userId);
         if (cloudNotes && cloudNotes.length > 0) {
-          // Compare and merge or just replace?
-          // Since cloud is source of truth across browsers, we replace the local state
-          // but preserve any local notes that aren't synced yet (ones with 'local_' ID)
-          setNotes((prevNotes) => {
-             const localOnlyNotes = prevNotes.filter(n => String(n.id).startsWith('local_'));
-             const mergedNotes = [...localOnlyNotes, ...cloudNotes];
-             
-             // Sort by date descending
-             mergedNotes.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-             return mergedNotes;
-          });
+          // Save cloud notes into offline cache engine so local IndexedDB is always up to date
+          for (const cNote of cloudNotes) {
+            await offlineSyncEngine.saveNote({
+              id: cNote.id,
+              studentId: userId,
+              title: cNote.title,
+              subject: cNote.subject || currentSubject,
+              classLevel: cNote.classLevel || 1,
+              elements: cNote.elements || [],
+              pages: cNote.pages || {},
+              totalPages: cNote.totalPages || 1,
+              currentPage: cNote.currentPage || 1,
+              canvasData: cNote.canvasData || '',
+              pageThumbnails: cNote.pageThumbnails || {},
+              tags: cNote.tags || [],
+              createdAt: cNote.createdAt,
+              updatedAt: cNote.updatedAt
+            });
+          }
+          const allUpdated = await offlineSyncEngine.getAllNotes(userId);
+          setNotes(allUpdated as ClassNote[]);
         }
       } catch (err) {
         console.error('Failed to sync notes from cloud', err);
@@ -123,13 +141,6 @@ export default function NotesApp() {
     
     syncNotesFromCloud();
   }, [user]);
-
-  // Save notes to localStorage when changed
-  useEffect(() => {
-    if (notes.length > 0) {
-      localStorage.setItem(`class_notes_${(user as any)?.id || 'guest'}`, JSON.stringify(notes));
-    }
-  }, [notes, user]);
 
   const subjectNames: { [key: string]: string } = {
     'MATH': 'Mathematics',
@@ -165,8 +176,10 @@ export default function NotesApp() {
     return matchesSearch && matchesSubject;
   });
 
-  const handleDeleteNote = (id: string) => {
+  const handleDeleteNote = async (id: string) => {
     if (window.confirm('Are you sure you want to delete this note?')) {
+      const userId = (user as any)?.id || 'guest';
+      await offlineSyncEngine.deleteNote(userId, id);
       setNotes(notes.filter(note => note.id !== id));
       if (selectedNote?.id === id) {
         setSelectedNote(null);
@@ -192,7 +205,7 @@ export default function NotesApp() {
       <div className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-sm">
         {/* Header */}
         <div className="p-4 border-b border-gray-200 bg-gradient-to-r from-green-500 to-emerald-600">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-3">
             <button
               onClick={() => navigate('/')}
               className="p-2 rounded-full bg-white/20 hover:bg-white/30 text-white"
@@ -207,6 +220,7 @@ export default function NotesApp() {
               <button
                 onClick={handleCreateNewNote}
                 className="p-2 rounded-full bg-white text-green-600 hover:bg-green-50"
+                title="Create New Note"
               >
                 <Plus className="w-5 h-5" />
               </button>
@@ -220,6 +234,11 @@ export default function NotesApp() {
                 <RefreshCw className={`w-5 h-5 ${isLoadingSchoolNotes ? 'animate-spin' : ''}`} />
               </button>
             )}
+          </div>
+
+          {/* Real-time Sync Status Indicator */}
+          <div className="mb-3">
+            <SyncStatusIndicator />
           </div>
 
           {/* Search */}
@@ -291,14 +310,31 @@ export default function NotesApp() {
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center space-x-2 mb-1">
-                        <div
-                          className="w-3 h-3 rounded-full"
-                          style={{ backgroundColor: subjectColors[note.subject] || '#6B7280' }}
-                        />
-                        <span className="text-xs font-medium text-gray-500">
-                          {subjectNames[note.subject] || note.subject}
-                        </span>
+                      <div className="flex items-center justify-between space-x-2 mb-1">
+                        <div className="flex items-center space-x-2">
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: subjectColors[note.subject] || '#6B7280' }}
+                          />
+                          <span className="text-xs font-medium text-gray-500">
+                            {subjectNames[note.subject] || note.subject}
+                          </span>
+                        </div>
+
+                        {/* Note Sync Status Flag */}
+                        {note.isConflictCopy ? (
+                          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 text-purple-700">
+                            🟣 Safe Fork
+                          </span>
+                        ) : note.syncStatus === 'synced' ? (
+                          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700 flex items-center gap-0.5">
+                            <CheckCircle2 className="w-2.5 h-2.5" /> Synced
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 flex items-center gap-0.5">
+                            <Clock className="w-2.5 h-2.5" /> Saved Locally
+                          </span>
+                        )}
                       </div>
                       <h3 className="font-medium text-gray-900 truncate">{note.title}</h3>
                       <div className="flex items-center mt-2 text-xs text-gray-500">
@@ -309,7 +345,7 @@ export default function NotesApp() {
                       </div>
                     </div>
                   </div>
-                  {note.tags.length > 0 && (
+                  {note.tags && note.tags.length > 0 && (
                     <div className="flex gap-1 mt-2 flex-wrap">
                       {note.tags.slice(0, 3).map(tag => (
                         <span key={tag} className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">

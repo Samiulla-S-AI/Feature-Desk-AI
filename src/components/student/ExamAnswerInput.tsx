@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { StrokeSmoothingEngine, SmoothPoint } from '../../lib/StrokeSmoothingEngine';
 import {
     PenTool,
     Keyboard,
@@ -130,6 +131,7 @@ export default function ExamAnswerInput({
     const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
     const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
     const overlayDragRef = useRef<{ id: string; startX: number; startY: number; objX: number; objY: number; action: 'move' | 'resize' } | null>(null);
+    const strokePointsRef = useRef<SmoothPoint[]>([]);
     const [eraserSize, setEraserSize] = useState(24);
 
     // History for undo/redo (drawing canvas only)
@@ -477,12 +479,18 @@ export default function ExamAnswerInput({
     };
 
     // ═══════════════════════════════════════════════════════════════════
-    // DRAWING LOGIC (on drawCanvas only)
+    // DRAWING LOGIC (on drawCanvas only with StrokeSmoothingEngine)
     // ═══════════════════════════════════════════════════════════════════
 
-    const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
+    const startDrawing = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
         if (answerMode !== 'write') return;
         e.preventDefault();
+
+        const drawCanvas = drawCanvasRef.current;
+        if (!drawCanvas) return;
+        const rect = drawCanvas.getBoundingClientRect();
+        const scaleX = drawCanvas.width / rect.width;
+        const scaleY = drawCanvas.height / rect.height;
 
         const pos = getPosition(e);
 
@@ -507,8 +515,6 @@ export default function ExamAnswerInput({
             return;
         }
 
-        const drawCanvas = drawCanvasRef.current;
-        if (!drawCanvas) return;
         const ctx = drawCanvas.getContext('2d');
         if (!ctx) return;
 
@@ -517,18 +523,30 @@ export default function ExamAnswerInput({
         if (['line', 'rectangle', 'circle', 'arrow', 'triangle', 'star', 'heart', 'hexagon'].includes(drawTool)) {
             setShapeStart(pos);
             setCanvasSnapshot(ctx.getImageData(0, 0, drawCanvas.width, drawCanvas.height));
-        } else {
+        } else if (drawTool === 'pen' || drawTool === 'highlighter') {
+            const coalesced = 'nativeEvent' in e && e.nativeEvent instanceof PointerEvent
+                ? StrokeSmoothingEngine.getCoalescedPoints(e as React.PointerEvent<HTMLCanvasElement>, scaleX, scaleY, rect)
+                : [{ x: pos.x, y: pos.y, time: performance.now() }];
+
+            strokePointsRef.current = coalesced;
+            if (coalesced.length > 1) {
+                StrokeSmoothingEngine.renderLiveBatch(ctx, coalesced, 0, penColor, penSize, drawTool === 'highlighter');
+            }
+        } else if (drawTool === 'eraser') {
             ctx.beginPath();
             ctx.moveTo(pos.x, pos.y);
         }
     };
 
-    const draw = (e: React.MouseEvent | React.TouchEvent) => {
+    const draw = (e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
         if (!isDrawing || answerMode !== 'write') return;
         e.preventDefault();
 
         const drawCanvas = drawCanvasRef.current;
         if (!drawCanvas) return;
+        const rect = drawCanvas.getBoundingClientRect();
+        const scaleX = drawCanvas.width / rect.width;
+        const scaleY = drawCanvas.height / rect.height;
         const ctx = drawCanvas.getContext('2d');
         if (!ctx) return;
 
@@ -537,37 +555,48 @@ export default function ExamAnswerInput({
         if (['line', 'rectangle', 'circle', 'arrow', 'triangle', 'star', 'heart', 'hexagon'].includes(drawTool) && shapeStart && canvasSnapshot) {
             ctx.putImageData(canvasSnapshot, 0, 0);
             drawShape(ctx, shapeStart, pos);
-        } else {
-            // Eraser uses destination-out — makes pixels transparent
-            // revealing background canvas underneath
-            if (drawTool === 'eraser') {
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.strokeStyle = 'rgba(0,0,0,1)';
-                ctx.lineWidth = eraserSize;
-            } else if (drawTool === 'highlighter') {
-                ctx.globalCompositeOperation = 'source-over';
-                ctx.strokeStyle = penColor;
-                ctx.lineWidth = penSize * 4;
-                ctx.globalAlpha = 0.3;
-            } else {
-                ctx.globalCompositeOperation = 'source-over';
-                ctx.strokeStyle = penColor;
-                ctx.lineWidth = penSize;
-                ctx.globalAlpha = 1;
-            }
+        } else if (drawTool === 'eraser') {
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.strokeStyle = 'rgba(0,0,0,1)';
+            ctx.lineWidth = eraserSize;
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             ctx.lineTo(pos.x, pos.y);
             ctx.stroke();
-
-            // Reset
             ctx.globalCompositeOperation = 'source-over';
-            ctx.globalAlpha = 1;
+        } else if (drawTool === 'pen' || drawTool === 'highlighter') {
+            const coalesced = 'nativeEvent' in e && e.nativeEvent instanceof PointerEvent
+                ? StrokeSmoothingEngine.getCoalescedPoints(e as React.PointerEvent<HTMLCanvasElement>, scaleX, scaleY, rect)
+                : [{ x: pos.x, y: pos.y, time: performance.now() }];
+
+            const prevPoints = strokePointsRef.current;
+            const anchor = prevPoints.length > 0 ? prevPoints[prevPoints.length - 1] : coalesced[0];
+
+            // Progressive batch smoothing: each point smooths against the PREVIOUSLY SMOOTHED point
+            const smoothedBatch = StrokeSmoothingEngine.smoothBatch(anchor, coalesced, 0.65);
+            const renderFromIndex = strokePointsRef.current.length;
+
+            for (let i = 0; i < smoothedBatch.length; i++) {
+                strokePointsRef.current.push(smoothedBatch[i]);
+            }
+
+            // Batch render ALL new segments — no dropped curves
+            StrokeSmoothingEngine.renderLiveBatch(
+                ctx, strokePointsRef.current, renderFromIndex,
+                penColor, penSize, drawTool === 'highlighter'
+            );
         }
     };
 
     const stopDrawing = () => {
         if (isDrawing) {
+            const drawCanvas = drawCanvasRef.current;
+            const ctx = drawCanvas?.getContext('2d');
+            if (ctx && (drawTool === 'pen' || drawTool === 'highlighter') && strokePointsRef.current.length > 0) {
+                StrokeSmoothingEngine.renderSmoothStroke(ctx, strokePointsRef.current, penColor, penSize, drawTool === 'highlighter');
+            }
+
+            strokePointsRef.current = [];
             setIsDrawing(false);
             setShapeStart(null);
             setCanvasSnapshot(null);
@@ -776,19 +805,32 @@ export default function ExamAnswerInput({
         return false;
     }, []);
 
-    /** Trigger save based on current mode */
+    const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    /** Trigger save based on current mode (Debounced by 600ms to eliminate liftoff hitches) */
     const triggerSave = useCallback(() => {
-        // Always save as ONE unified canvas image — both drawing + typed text combined
-        if (hasDrawingContent()) {
-            const dataUrl = saveComposite();
-            if (dataUrl) {
-                onAnswerChange(questionId, `[DRAWING]:${dataUrl}`);
-            }
-        } else {
-            // No content at all — save empty
-            onAnswerChange(questionId, '');
+        if (saveTimerRef.current) {
+            clearTimeout(saveTimerRef.current);
         }
+        saveTimerRef.current = setTimeout(() => {
+            if (hasDrawingContent()) {
+                const dataUrl = saveComposite();
+                if (dataUrl) {
+                    onAnswerChange(questionId, `[DRAWING]:${dataUrl}`);
+                }
+            } else {
+                // No content at all — save empty
+                onAnswerChange(questionId, '');
+            }
+        }, 600);
     }, [questionId, onAnswerChange, saveComposite, hasDrawingContent]);
+
+    // Clean up timer on unmount
+    useEffect(() => {
+        return () => {
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        };
+    }, []);
 
     const clearCanvas = () => {
         const drawCanvas = drawCanvasRef.current;
@@ -1264,6 +1306,12 @@ export default function ExamAnswerInput({
 
             {/* Right Group: Count, Pagination, Zoom, Undo/Redo, Fullscreen */}
             <div className="flex items-center gap-2 flex-wrap ml-auto">
+                {/* Auto-Saved Indicator Pill */}
+                <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg flex items-center gap-1 shadow-xs" title="Answer is continuously auto-saved to secure local cache">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Auto-Saved
+                </span>
+
                 {/* Count for typing */}
                 {answerMode === 'type' && typedText.length > 0 && (
                     <span className="text-xs font-semibold text-gray-500 bg-white px-2 py-1.5 rounded-lg border border-gray-200 shadow-sm shrink-0">
@@ -1390,19 +1438,18 @@ export default function ExamAnswerInput({
                             {/* Drawing Canvas (student strokes — interactive in WRITE mode only) */}
                             <canvas
                                 ref={drawCanvasRef}
-                                className={`absolute inset-0 ${answerMode === 'write' ? (drawTool === 'eraser' ? 'cursor-cell' : 'cursor-crosshair') : ''} touch-none`}
+                                className={`absolute inset-0 touch-none`}
                                 style={{
                                     width: '100%',
                                     height: '100%',
-                                    pointerEvents: answerMode === 'write' ? 'auto' : 'none'
+                                    pointerEvents: answerMode === 'write' ? 'auto' : 'none',
+                                    cursor: answerMode === 'write' ? (drawTool === 'eraser' ? 'cell' : `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Ccircle cx='5' cy='5' r='3' fill='%232563eb' stroke='white' stroke-width='1'/%3E%3C/svg%3E") 5 5, auto`) : 'default'
                                 }}
-                                onMouseDown={startDrawing}
-                                onMouseMove={draw}
-                                onMouseUp={stopDrawing}
-                                onMouseLeave={stopDrawing}
-                                onTouchStart={startDrawing}
-                                onTouchMove={draw}
-                                onTouchEnd={stopDrawing}
+                                onPointerDown={startDrawing}
+                                onPointerMove={draw}
+                                onPointerUp={stopDrawing}
+                                onPointerLeave={stopDrawing}
+                                onTouchStart={(e) => { if (answerMode === 'write') e.preventDefault(); }}
                             />
 
                             {/* Typed text read-only overlay — visible in WRITE mode so text doesn't disappear */}

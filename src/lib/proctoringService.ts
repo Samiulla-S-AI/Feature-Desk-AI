@@ -3,6 +3,7 @@
 // ===================================================================
 
 import { supabase } from './supabase';
+import html2canvas from 'html2canvas';
 
 export interface ProctoringEvent {
     id: string;
@@ -45,22 +46,14 @@ const proctoringStore: {
 // Screenshot capture utility
 export const captureScreenshot = async (): Promise<string | null> => {
     try {
-        // Dynamic import for html2canvas - will work if installed
-        try {
-            const html2canvas = (await import('html2canvas')).default;
-            const canvas = await html2canvas(document.body, {
-                logging: false,
-                useCORS: true,
-                scale: 0.5, // Reduce quality for smaller file size
-                width: window.innerWidth,
-                height: window.innerHeight
-            });
-            return canvas.toDataURL('image/webp', 0.5);
-        } catch {
-            // Fallback - return null if html2canvas is not available
-            console.warn('html2canvas not available, skipping screenshot');
-            return null;
-        }
+        const canvas = await html2canvas(document.body, {
+            logging: false,
+            useCORS: true,
+            scale: 0.5, // Reduce quality for smaller file size
+            width: window.innerWidth,
+            height: window.innerHeight
+        });
+        return canvas.toDataURL('image/webp', 0.5);
     } catch (error) {
         console.error('Screenshot capture failed:', error);
         return null;

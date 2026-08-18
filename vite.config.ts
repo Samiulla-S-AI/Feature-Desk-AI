@@ -156,6 +156,7 @@ export default defineConfig({
   // Serve public folder for static assets
   publicDir: 'public',
   server: {
+    host: true, // Exposes Vite dev server to local network (0.0.0.0) for mobile/tablet testing
     watch: {
       // Don't watch lab folders to improve performance
       ignored: ['**/lab/**', '**/Physics_lab/**', '**/node_modules/**']
@@ -177,15 +178,45 @@ export default defineConfig({
     rollupOptions: {
       external: [/\/lab\/.*/],
       output: {
-        // Manual chunk splitting for stable, predictable chunk names
-        // This prevents chunk hash changes from breaking cached dynamic imports
-        manualChunks: {
-          // Core React
-          'vendor-react': ['react', 'react-dom'],
-          // Supabase client
-          'vendor-supabase': ['@supabase/supabase-js'],
-          // Gemini AI
-          'vendor-gemini': ['@google/generative-ai']
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react/') || id.includes('react-dom') || id.includes('react-router-dom')) {
+              return 'vendor-react';
+            }
+            if (id.includes('@supabase')) {
+              return 'vendor-supabase';
+            }
+            if (id.includes('firebase')) {
+              return 'vendor-firebase';
+            }
+            if (id.includes('@google/generative-ai')) {
+              return 'vendor-gemini';
+            }
+            if (id.includes('recharts') || id.includes('d3-')) {
+              return 'vendor-charts';
+            }
+            if (id.includes('lucide-react')) {
+              return 'vendor-icons';
+            }
+            if (id.includes('framer-motion')) {
+              return 'vendor-motion';
+            }
+            if (id.includes('@tiptap') || id.includes('prosemirror')) {
+              return 'vendor-tiptap';
+            }
+            if (id.includes('html2canvas') || id.includes('jspdf')) {
+              return 'vendor-pdf-canvas';
+            }
+            if (id.includes('pdfjs-dist')) {
+              return 'vendor-pdfjs';
+            }
+            if (id.includes('xlsx')) {
+              return 'vendor-xlsx';
+            }
+            if (id.includes('mathlive')) {
+              return 'vendor-mathlive';
+            }
+          }
         }
       }
     }

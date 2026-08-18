@@ -182,9 +182,17 @@ export default function NotificationCenter() {
                   </div>
 
                   {qf.feedback && (
-                    <div className="bg-gray-50/80 rounded-lg p-4 text-sm text-gray-700 leading-relaxed border-l-4 border-indigo-200">
-                      <span className="font-semibold text-indigo-900 mr-2 block mb-2">Feedback:</span>
+                    <div className="bg-gray-50/90 rounded-2xl p-4 text-sm text-gray-700 leading-relaxed border-l-4 border-indigo-400 shadow-2xs space-y-2">
+                      <span className="font-bold text-indigo-950 flex items-center gap-1.5 text-xs uppercase tracking-wider mb-1">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" /> Teacher Math Feedback:
+                      </span>
                       <MarkdownRenderer content={qf.feedback} />
+                      {qf.feedbackImage && (
+                        <div className="mt-3 p-2 bg-white rounded-xl border border-gray-200">
+                          <img src={qf.feedbackImage} alt="Feedback Diagram" className="max-h-60 w-auto object-contain rounded-lg mx-auto" />
+                          <span className="text-[10px] text-gray-500 font-medium block text-center mt-1">Teacher Visual Aid</span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

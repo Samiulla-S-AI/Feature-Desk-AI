@@ -1,4 +1,4 @@
-import { callWithFallback } from './gemini';
+import { callWithFallback, generateSmartContent } from './gemini';
 
 // ===================================================================
 // School Management Portal AI Features (Gemini Integration)
@@ -54,11 +54,7 @@ export const generateLessonPlan = async (
     Return ONLY valid JSON.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -114,11 +110,7 @@ export const generateAbsentDayNotification = async (
     Return ONLY the notification text.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: false });
         return text.trim();
     } catch (error) {
         console.error('Error generating absence notification:', error);
@@ -164,11 +156,7 @@ export const generateAnnualReport = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -240,11 +228,7 @@ export const analyzeDropoutRisk = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -301,11 +285,7 @@ export const generateBenchmarkReport = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -375,11 +355,7 @@ export const analyzeExamReadiness = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {

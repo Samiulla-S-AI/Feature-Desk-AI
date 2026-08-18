@@ -1,4 +1,94 @@
-import { callWithFallback } from './gemini';
+import { callWithFallback, generateSmartContent } from './gemini';
+
+/**
+ * Safely parses JSON returned by LLM models (e.g. Gemini).
+ * Handles markdown code blocks, unescaped literal control characters/newlines
+ * inside string values, trailing commas, and structural extraction.
+ */
+export const cleanAndParseJson = (text: string): any => {
+    if (!text || typeof text !== 'string') {
+        throw new Error('Invalid text input for JSON parsing');
+    }
+
+    let cleaned = text.trim();
+
+    // 1. Strip markdown codeblock markers if present
+    if (cleaned.startsWith('```json')) {
+        cleaned = cleaned.replace(/^```json\s*/i, '').replace(/\s*```$/, '');
+    } else if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+    cleaned = cleaned.trim();
+
+    // 2. Extract outermost JSON structure ({ ... } or [ ... ])
+    const jsonMatch = cleaned.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    if (!jsonMatch) {
+        throw new Error('No JSON object or array found in response');
+    }
+    const rawJsonStr = jsonMatch[0];
+
+    // 3. Direct parse attempt
+    try {
+        return JSON.parse(rawJsonStr);
+    } catch (directError) {
+        // Fall through to sanitization
+    }
+
+    // 4. Sanitize unescaped line breaks (\n, \r, \t) inside double-quoted strings
+    let sanitizedStr = '';
+    let inString = false;
+    let isEscaped = false;
+
+    for (let i = 0; i < rawJsonStr.length; i++) {
+        const char = rawJsonStr[i];
+        if (inString) {
+            if (isEscaped) {
+                sanitizedStr += char;
+                isEscaped = false;
+            } else if (char === '\\') {
+                sanitizedStr += char;
+                isEscaped = true;
+            } else if (char === '"') {
+                sanitizedStr += char;
+                inString = false;
+            } else if (char === '\n') {
+                sanitizedStr += '\\n';
+            } else if (char === '\r') {
+                sanitizedStr += '\\r';
+            } else if (char === '\t') {
+                sanitizedStr += '\\t';
+            } else {
+                const code = char.charCodeAt(0);
+                if (code < 32) {
+                    sanitizedStr += ' ';
+                } else {
+                    sanitizedStr += char;
+                }
+            }
+        } else {
+            if (char === '"') {
+                inString = true;
+            }
+            sanitizedStr += char;
+        }
+    }
+
+    try {
+        return JSON.parse(sanitizedStr);
+    } catch (sanitizedError) {
+        // Fall through to trailing comma fix
+    }
+
+    // 5. Repair trailing commas before } or ]
+    const trailingCommaFixed = sanitizedStr.replace(/,\s*([\}\]])/g, '$1');
+
+    try {
+        return JSON.parse(trailingCommaFixed);
+    } catch (finalError) {
+        console.error('❌ All JSON parsing attempts failed:', finalError);
+        throw finalError;
+    }
+};
 
 // ===================================================================
 // Teacher Portal AI Features (Gemini Integration)
@@ -80,11 +170,7 @@ export const generateQuestionsFromPDF = async (
     Return ONLY valid JSON, no other text.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         // Parse JSON from response
         const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -126,8 +212,7 @@ export const extractQuestionsFromImage = async (imageBase64: string): Promise<{
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 prompt,
                 {
                     inlineData: {
@@ -135,10 +220,7 @@ export const extractQuestionsFromImage = async (imageBase64: string): Promise<{
                         mimeType: 'image/png'
                     }
                 }
-            ]);
-            const response = await result.response;
-            return response.text();
-        });
+            ], { requireJson: true });
         const jsonMatch = text.match(/\{[\s\S]*\}/);
 
         if (jsonMatch) {
@@ -170,11 +252,7 @@ export const classifyQuestionDifficulty = async (questions: any[]): Promise<any[
     Return the same array with these fields added. Return ONLY valid JSON array.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
@@ -227,11 +305,7 @@ export const analyzeQuestionEffectiveness = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -300,11 +374,7 @@ export const gradeAnswerWithRubric = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -394,8 +464,7 @@ export const gradeImageAnswerWithRubric = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 prompt,
                 {
                     inlineData: {
@@ -403,14 +472,10 @@ export const gradeImageAnswerWithRubric = async (
                         mimeType: 'image/jpeg'
                     }
                 }
-            ]);
-            const response = await result.response;
-            return response.text();
-        });
+            ], { requireJson: true });
 
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
+        try {
+            const parsed = cleanAndParseJson(text);
             return {
                 score: parsed.score || 0,
                 breakdown: parsed.breakdown || [],
@@ -418,6 +483,8 @@ export const gradeImageAnswerWithRubric = async (
                 confidence: Math.min(1, Math.max(0, parsed.confidence || 0.5)),
                 confidenceFactors: parsed.confidenceFactors || ['AI confidence could not be determined']
             };
+        } catch (parseErr) {
+            console.warn('⚠️ Could not parse LLM grading response using cleanAndParseJson:', parseErr);
         }
 
         return {
@@ -484,11 +551,7 @@ export const calculatePartialCredit = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -536,11 +599,7 @@ export const detectMistakePatterns = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -582,11 +641,7 @@ export const forecastClassReadiness = async (
     }
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -682,11 +737,7 @@ export const generatePersonalizedFeedback = async (
     Return ONLY the feedback text (with the section headers), no JSON.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: false });
         return text.trim();
     } catch (error) {
         console.error('Error generating feedback:', error);
@@ -726,11 +777,7 @@ export const generateParentReport = async (
     Return ONLY the email body text.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: false });
         return text.trim();
     } catch (error) {
         console.error('Error generating parent report:', error);
@@ -761,11 +808,7 @@ export const generateInterventionMessage = async (
     Return ONLY the message text (2-3 sentences).
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: false });
         return text.trim();
     } catch (error) {
         console.error('Error generating intervention message:', error);
@@ -792,11 +835,7 @@ export const generateLearningVelocityNarrative = async (
     Use specific names and numbers. Return ONLY the narrative text.
     `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: false });
         return text.trim();
     } catch (error) {
         console.error('Error generating velocity narrative:', error);
@@ -884,14 +923,10 @@ export const generateImageForQuestion = async (prompt?: string): Promise<string>
         console.log('Generating image for prompt:', prompt);
 
         // 1. Refine the image prompt using the standard text model
-        const refinedPrompt = await callWithFallback(async (model) => {
-            const result = await model.generateContent(`
+        const refinedPrompt = await generateSmartContent(`
                 Create a short, detailed visual description for an educational image based on this concept: "${prompt}".
                 Focus on the visual elements. Return ONLY the description, max 10 words.
-             `);
-            const response = await result.response;
-            return response.text().trim();
-        }, 'gemini-2.5-flash');
+             `, { requireJson: false, modelName: "gemini-2.5-flash" }).then(res => res.trim());
 
         console.log('Refined prompt:', refinedPrompt);
 
@@ -929,11 +964,7 @@ export const analyzeImageNecessity = async (question: string): Promise<{ needed:
         }
         `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(promptText);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(promptText, { requireJson: true });
 
         // Parse JSON from response
         let jsonResponse = text;
@@ -955,3 +986,43 @@ export const analyzeImageNecessity = async (question: string): Promise<{ needed:
         return { needed: false, confidence: 0, prompt: '' };
     }
 };
+
+/**
+ * Generates simplified math explanations (ELI5 / ELI9 style) for student answers.
+ * - ELI5 (Explain Like I'm 5): Uses super simple analogies, real world examples (e.g. apples, pizza slices).
+ * - ELI9 (Explain Like I'm 9): Uses step-by-step math rules, clear formulas \(...\), and friendly tips.
+ */
+export async function generateSimpleMathExplanation(
+    questionText: string,
+    studentAnswer: string,
+    mode: 'ELI5' | 'ELI9' | 'step_by_step'
+): Promise<string> {
+    const prompt = `You are a friendly, encouraging math tutor explaining a math problem to a student.
+Mode: ${mode === 'ELI5' ? 'ELI5 (Explain Like I am 5 years old using simple analogies like apples, pizza, toys)' : mode === 'ELI9' ? 'ELI9 (Explain Like I am 9 years old using clear 3-step math logic with formulas like \\(x = 5\\))' : 'Step-by-step clear solution breakdown'}
+
+Question: "${questionText}"
+Student's Answer: "${studentAnswer}"
+
+Generate a short, super clear explanation in Markdown.
+If mode is ELI5:
+- Start with "**🎈 ELI5 Simple Explanation:**"
+- Use fun real-life stories/analogies (e.g., sharing candies, slices of pizza).
+- No complicated jargon.
+
+If mode is ELI9:
+- Start with "**💡 ELI9 Step-by-Step Math Guide:**"
+- Give 3 numbered steps with simple formulas in \\(...\\) format.
+- Highlight the correct final answer clearly.
+
+Keep it friendly, supportive, and under 150 words.`;
+
+    try {
+        const response = await callWithFallback(prompt);
+        return response.trim();
+    } catch (error) {
+        console.error('Error generating simple math explanation:', error);
+        return mode === 'ELI5'
+            ? `**🎈 ELI5 Simple Explanation:**\nThink of this problem like sharing 4 apples among 2 friends — each friend gets 2 apples!`
+            : `**💡 ELI9 Step-by-Step Math Guide:**\n1. Identify given values.\n2. Apply formula \\(x = \\dots\\).\n3. Simplify step by step.`;
+    }
+}

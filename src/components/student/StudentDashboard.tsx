@@ -7,6 +7,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import WritingCanvas from './WritingCanvas';
 import CentralHub from './CentralHub';
 import { StudentMonitoringPanel } from '../cv';
+import SyncStatusIndicator from '../common/SyncStatusIndicator';
 
 // Inspiring quotes for students
 const inspiringQuotes = [
@@ -115,6 +116,12 @@ export default function StudentDashboard() {
                                     {timeString}
                                 </span>
                             </div>
+
+                            {/* Divider */}
+                            <div className="hidden sm:block w-px h-5 bg-slate-200" />
+
+                            {/* Global Local/Cloud Sync Status Indicator */}
+                            <SyncStatusIndicator />
 
                             {/* Divider */}
                             <div className="hidden sm:block w-px h-5 bg-slate-200" />

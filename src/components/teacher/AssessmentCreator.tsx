@@ -23,8 +23,11 @@ import {
 import { generateQuestionsFromPDF, extractQuestionsFromImage, classifyQuestionDifficulty, generateImageForQuestion, analyzeImageNecessity } from '../../lib/teacherAI';
 import { chatWithPDF, fileToBase64, generateQuestionsFromPDFDirect } from '../../lib/pdfProcessor';
 import { createAssessment, updateAssessment } from '../../lib/teacherDb';
+import { cloudinaryService } from '../../lib/cloudinaryService';
 import { useAuth } from '../../contexts/AuthContext';
 import MarkdownRenderer from '../common/MarkdownRenderer';
+
+export type Step = 'modeSelection' | 'upload' | 'chat' | 'configure' | 'review' | 'examType' | 'schedule';
 
 interface Question {
     id: number;
@@ -59,9 +62,11 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
     // Selected subject state
     const [selectedSubject, setSelectedSubject] = useState(assessmentToEdit?.subject_code || subjectCode);
 
-    const [step, setStep] = useState<'upload' | 'chat' | 'configure' | 'review' | 'examType' | 'schedule'>(
-        assessmentToEdit ? 'review' : 'upload'
+    const [creationMode, setCreationMode] = useState<'ai' | 'manual'>(assessmentToEdit ? 'manual' : 'ai');
+    const [step, setStep] = useState<Step>(
+        assessmentToEdit ? 'review' : 'modeSelection'
     );
+    const [uploadingImageQuestionId, setUploadingImageQuestionId] = useState<number | null>(null);
     const [loading, setLoading] = useState(false);
     const [uploadedContent, setUploadedContent] = useState<string>('');
     const [questions, setQuestions] = useState<Question[]>(() => {
@@ -337,6 +342,23 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
         alert('Regenerating question...');
     };
 
+    const handleImageUploadForQuestion = async (questionId: number, file: File) => {
+        setUploadingImageQuestionId(questionId);
+        try {
+            const url = await cloudinaryService.uploadFile(file, 'question-images');
+            if (url) {
+                handleQuestionEdit(questionId, 'imageUrl', url);
+            } else {
+                alert('Failed to upload image to Cloudinary. Please try again.');
+            }
+        } catch (error) {
+            console.error('Error uploading image to Cloudinary:', error);
+            alert('Failed to upload image. Please try again.');
+        } finally {
+            setUploadingImageQuestionId(null);
+        }
+    };
+
     const saveAssessment = async () => {
         const acceptedQuestions = questions.filter(q => q.status !== 'rejected');
 
@@ -374,7 +396,8 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                 difficulty: q.difficulty,
                 marks: q.marks,
                 type: q.type,
-                status: q.status
+                status: q.status,
+                imageUrl: q.imageUrl
             })),
             total_marks: totalMarks,
             time_limit: timeLimit * 60, // Convert to seconds
@@ -543,6 +566,73 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                         </div>
                     ) : (
                         <>
+                            {/* Step 0: Mode Selection (AI or Manual) */}
+                            {step === 'modeSelection' && (
+                                <div className="space-y-8 max-w-3xl mx-auto py-4">
+                                    <div className="text-center">
+                                        <span className="inline-block px-3.5 py-1 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-full text-xs font-bold uppercase tracking-wider mb-3 shadow-xs">
+                                            Create Assessment
+                                        </span>
+                                        <h3 className="text-2xl font-bold text-gray-900">How would you like to create this assessment?</h3>
+                                        <p className="text-gray-600 mt-2 text-sm">Choose between AI-powered generation from your documents or manual question creation.</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        {/* Manual Creation Card */}
+                                        <div
+                                            onClick={() => {
+                                                setCreationMode('manual');
+                                                setStep('review');
+                                                if (questions.length === 0) {
+                                                    addManualQuestion();
+                                                }
+                                            }}
+                                            className="group bg-white border-2 border-gray-200 hover:border-blue-500 rounded-2xl p-6 cursor-pointer shadow-sm hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 flex flex-col justify-between"
+                                        >
+                                            <div>
+                                                <div className="w-14 h-14 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center mb-5 group-hover:scale-110 transition-transform shadow-inner">
+                                                    <PlusCircle className="w-8 h-8" />
+                                                </div>
+                                                <h4 className="text-xl font-bold text-gray-900 mb-2">Create Manually</h4>
+                                                <p className="text-sm text-gray-600 leading-relaxed mb-4">
+                                                    Build questions manually with <strong>1 mark, 2 marks, or 5 marks</strong> questions. Easily attach images directly from your local storage browse option to Cloudinary.
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center text-blue-600 font-semibold text-sm gap-1 mt-4">
+                                                <span>Build Manually</span>
+                                                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                            </div>
+                                        </div>
+
+                                        {/* AI Generation Card */}
+                                        <div
+                                            onClick={() => {
+                                                setCreationMode('ai');
+                                                setStep('upload');
+                                            }}
+                                            className="group relative bg-gradient-to-br from-purple-50 via-white to-blue-50 border-2 border-purple-200 hover:border-purple-500 rounded-2xl p-6 cursor-pointer shadow-sm hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 flex flex-col justify-between"
+                                        >
+                                            <div className="absolute top-4 right-4 bg-purple-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide">
+                                                Fast & Automated
+                                            </div>
+                                            <div>
+                                                <div className="w-14 h-14 bg-purple-100 text-purple-600 rounded-2xl flex items-center justify-center mb-5 group-hover:scale-110 transition-transform shadow-inner">
+                                                    <Sparkles className="w-8 h-8" />
+                                                </div>
+                                                <h4 className="text-xl font-bold text-gray-900 mb-2">Create with AI</h4>
+                                                <p className="text-sm text-gray-600 leading-relaxed mb-4">
+                                                    Upload PDF notes, textbook chapters, or photos. AI automatically generates categorized questions with options, answers, and AI image generation.
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center text-purple-600 font-semibold text-sm gap-1 mt-4">
+                                                <span>Generate with AI</span>
+                                                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             {/* Step 1: Upload */}
                             {step === 'upload' && (
                                 <div className="space-y-6">
@@ -862,85 +952,185 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                                                 </div>
 
                                                 {editingQuestion === question.id ? (
-                                                    <div className="space-y-3">
-                                                        <textarea
-                                                            value={question.question}
-                                                            onChange={(e) => handleQuestionEdit(question.id, 'question', e.target.value)}
-                                                            rows={2}
-                                                            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500"
-                                                        />
-                                                        {question.type === 'mcq' && question.options && (
-                                                            <div className="grid grid-cols-2 gap-2">
-                                                                {question.options.map((opt, optIndex) => (
+                                                    <div className="space-y-4 p-3 bg-white rounded-xl border border-blue-200 shadow-sm">
+                                                        {/* Question Type & Marks Selector */}
+                                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pb-2 border-b border-gray-100">
+                                                            <div>
+                                                                <label className="block text-xs font-semibold text-gray-700 mb-1">Question Type</label>
+                                                                <select
+                                                                    value={question.type}
+                                                                    onChange={(e) => {
+                                                                        const newType = e.target.value as 'mcq' | 'short_answer' | 'long_answer';
+                                                                        const defaultMarks = newType === 'mcq' ? 1 : newType === 'short_answer' ? 2 : 5;
+                                                                        handleQuestionEdit(question.id, 'type', newType);
+                                                                        handleQuestionEdit(question.id, 'marks', defaultMarks);
+                                                                        if (newType === 'mcq' && (!question.options || question.options.length === 0)) {
+                                                                            handleQuestionEdit(question.id, 'options', ['', '', '', '']);
+                                                                        }
+                                                                    }}
+                                                                    className="w-full px-3 py-1.5 border border-gray-200 rounded-lg text-xs font-medium bg-gray-50 focus:ring-2 focus:ring-blue-500"
+                                                                >
+                                                                    <option value="mcq">MCQ (Multiple Choice)</option>
+                                                                    <option value="short_answer">Short Answer</option>
+                                                                    <option value="long_answer">Long Answer / Essay</option>
+                                                                </select>
+                                                            </div>
+
+                                                            <div>
+                                                                <label className="block text-xs font-semibold text-gray-700 mb-1">Question Marks</label>
+                                                                <div className="flex items-center gap-1">
+                                                                    {[1, 2, 5].map(m => (
+                                                                        <button
+                                                                            key={m}
+                                                                            type="button"
+                                                                            onClick={() => handleQuestionEdit(question.id, 'marks', m)}
+                                                                            className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                                                                                question.marks === m
+                                                                                    ? 'bg-blue-600 text-white shadow-xs'
+                                                                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                                                            }`}
+                                                                        >
+                                                                            {m} Mark{m > 1 ? 's' : ''}
+                                                                        </button>
+                                                                    ))}
                                                                     <input
-                                                                        key={optIndex}
-                                                                        type="text"
-                                                                        value={opt}
-                                                                        onChange={(e) => {
-                                                                            const newOptions = [...question.options!];
-                                                                            newOptions[optIndex] = e.target.value;
-                                                                            handleQuestionEdit(question.id, 'options', newOptions);
-                                                                        }}
-                                                                        className="px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                                                                        placeholder={`Option ${optIndex + 1}`}
+                                                                        type="number"
+                                                                        min="1"
+                                                                        max="20"
+                                                                        value={question.marks}
+                                                                        onChange={(e) => handleQuestionEdit(question.id, 'marks', Math.max(1, parseInt(e.target.value) || 1))}
+                                                                        className="w-16 px-2 py-1 border border-gray-200 rounded-lg text-xs font-semibold text-center"
+                                                                        title="Custom Marks"
                                                                     />
-                                                                ))}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Question Text */}
+                                                        <div>
+                                                            <label className="block text-xs font-semibold text-gray-700 mb-1">Question Statement</label>
+                                                            <textarea
+                                                                value={question.question}
+                                                                onChange={(e) => handleQuestionEdit(question.id, 'question', e.target.value)}
+                                                                rows={2}
+                                                                placeholder="Enter question text here..."
+                                                                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                                                            />
+                                                        </div>
+
+                                                        {/* MCQ Options */}
+                                                        {question.type === 'mcq' && (
+                                                            <div>
+                                                                <label className="block text-xs font-semibold text-gray-700 mb-1">Options (Select radio for correct option)</label>
+                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                                    {(question.options || ['', '', '', '']).map((opt, optIndex) => (
+                                                                        <div key={optIndex} className="flex items-center gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
+                                                                            <input
+                                                                                type="radio"
+                                                                                name={`correct-${question.id}`}
+                                                                                checked={question.correct === optIndex}
+                                                                                onChange={() => handleQuestionEdit(question.id, 'correct', optIndex)}
+                                                                                className="text-blue-600 focus:ring-blue-500"
+                                                                            />
+                                                                            <input
+                                                                                type="text"
+                                                                                value={opt}
+                                                                                onChange={(e) => {
+                                                                                    const newOptions = [...(question.options || ['', '', '', ''])];
+                                                                                    newOptions[optIndex] = e.target.value;
+                                                                                    handleQuestionEdit(question.id, 'options', newOptions);
+                                                                                }}
+                                                                                className="flex-1 px-2 py-1 border border-gray-200 rounded text-xs bg-white"
+                                                                                placeholder={`Option ${String.fromCharCode(65 + optIndex)}`}
+                                                                            />
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
                                                             </div>
                                                         )}
 
-                                                        {/* Image Generation Controls */}
-                                                        <div className="pt-3 border-t flex flex-col gap-2 mt-2">
-                                                            <div className="flex items-center justify-between">
-                                                                <label className="flex items-center space-x-2 cursor-pointer">
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={question.needsImage || false}
-                                                                        onChange={(e) => handleQuestionEdit(question.id, 'needsImage', e.target.checked)}
-                                                                        className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                                                                    />
-                                                                    <span className="text-sm font-medium text-gray-700">Needs Visual Aid / Image</span>
-                                                                </label>
-                                                                <button
-                                                                    onClick={() => handleCheckNecessity(question.id)}
-                                                                    className="text-xs text-blue-600 hover:text-blue-800 underline"
-                                                                >
-                                                                    Check Necessity with AI
-                                                                </button>
+                                                        {/* Attached Image & Controls */}
+                                                        <div className="pt-3 border-t border-gray-100 space-y-3">
+                                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                <span className="text-xs font-semibold text-gray-700 flex items-center gap-1">
+                                                                    <Image className="w-3.5 h-3.5 text-purple-600" />
+                                                                    Question Diagram / Visual Image
+                                                                </span>
+
+                                                                <div className="flex items-center gap-2">
+                                                                    {/* Local Storage Browse Option */}
+                                                                    <label className="cursor-pointer px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors">
+                                                                        {uploadingImageQuestionId === question.id ? (
+                                                                            <Loader className="w-3.5 h-3.5 animate-spin" />
+                                                                        ) : (
+                                                                            <Image className="w-3.5 h-3.5" />
+                                                                        )}
+                                                                        <span>{uploadingImageQuestionId === question.id ? 'Uploading...' : 'Browse Local Image'}</span>
+                                                                        <input
+                                                                            type="file"
+                                                                            accept="image/*"
+                                                                            className="hidden"
+                                                                            onChange={(e) => {
+                                                                                const file = e.target.files?.[0];
+                                                                                if (file) {
+                                                                                    handleImageUploadForQuestion(question.id, file);
+                                                                                }
+                                                                            }}
+                                                                        />
+                                                                    </label>
+
+                                                                    {/* AI Generator Toggle/Button */}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleCheckNecessity(question.id)}
+                                                                        className="px-2.5 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200 rounded-xl text-xs font-medium flex items-center gap-1 transition-colors"
+                                                                        title="Check if AI recommends an image diagram for this question"
+                                                                    >
+                                                                        <span>Check AI Need</span>
+                                                                    </button>
+
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleGenerateImage(question.id)}
+                                                                        className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors"
+                                                                    >
+                                                                        <Sparkles className="w-3.5 h-3.5" />
+                                                                        <span>AI Image</span>
+                                                                    </button>
+                                                                </div>
                                                             </div>
 
-                                                            {question.needsImage && (
-                                                                <div className="bg-purple-50 p-3 rounded-lg border border-purple-100">
-                                                                    <label className="block text-xs font-medium text-purple-800 mb-1">Image Prompt (Gemini 2.5 Flash)</label>
-                                                                    <div className="flex gap-2">
-                                                                        <input
-                                                                            type="text"
-                                                                            value={question.imagePrompt || ''}
-                                                                            onChange={(e) => handleQuestionEdit(question.id, 'imagePrompt', e.target.value)}
-                                                                            placeholder="Describe the image..."
-                                                                            className="flex-1 px-2 py-1 text-sm border border-purple-200 rounded"
-                                                                        />
-                                                                        <button
-                                                                            onClick={() => handleGenerateImage(question.id)}
-                                                                            className="px-3 py-1 bg-purple-600 text-white text-xs rounded hover:bg-purple-700 transition flex items-center gap-1"
-                                                                        >
-                                                                            <Sparkles className="w-3 h-3" />
-                                                                            Generate
-                                                                        </button>
+                                                            {/* Cloudinary Image Preview */}
+                                                            {question.imageUrl && (
+                                                                <div className="relative mt-2 p-2 bg-white rounded-xl border border-gray-200 shadow-xs max-w-md mx-auto">
+                                                                    <img
+                                                                        src={question.imageUrl}
+                                                                        alt="Attached Question Visual"
+                                                                        className="max-h-48 w-auto object-contain rounded-lg mx-auto"
+                                                                    />
+                                                                    <div className="absolute top-3 left-3 bg-green-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1">
+                                                                        <Check className="w-3 h-3" /> Cloudinary Ready
                                                                     </div>
-                                                                    {question.imageUrl && (
-                                                                        <div className="mt-2 relative group">
-                                                                            <img src={question.imageUrl} alt="Generated Question Aid" className="w-full h-40 object-contain bg-white rounded border border-gray-200" />
-                                                                            <button
-                                                                                onClick={() => handleQuestionEdit(question.id, 'imageUrl', undefined)}
-                                                                                className="absolute top-2 right-2 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                                                                                title="Remove Image"
-                                                                            >
-                                                                                <X className="w-3 h-3" />
-                                                                            </button>
-                                                                        </div>
-                                                                    )}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleQuestionEdit(question.id, 'imageUrl', undefined)}
+                                                                        className="absolute top-3 right-3 p-1.5 bg-red-600 text-white rounded-full hover:bg-red-700 transition shadow-xs"
+                                                                        title="Remove Image"
+                                                                    >
+                                                                        <X className="w-3.5 h-3.5" />
+                                                                    </button>
                                                                 </div>
                                                             )}
+                                                        </div>
+
+                                                        <div className="flex justify-end pt-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setEditingQuestion(null)}
+                                                                className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 transition"
+                                                            >
+                                                                Done Editing
+                                                            </button>
                                                         </div>
                                                     </div>
                                                 ) : (
@@ -1220,23 +1410,32 @@ export default function AssessmentCreator({ subjectCode, classId, availableSubje
                 </div>
 
                 {/* Footer Navigation */}
-                <div className="p-4 border-t bg-gray-50 flex justify-between">
-                    <button
-                        onClick={() => {
-                            const steps: ('upload' | 'chat' | 'configure' | 'review' | 'examType' | 'schedule')[] = ['upload', 'chat', 'configure', 'review', 'examType', 'schedule'];
-                            const currentIndex = steps.indexOf(step);
-                            if (currentIndex > 0) {
-                                setStep(steps[currentIndex - 1]);
-                            }
-                        }}
-                        disabled={step === 'upload'}
-                        className="px-4 py-2 text-gray-600 hover:text-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        ← Back
-                    </button>
-                    <div className="text-sm text-gray-500">
-                        Step {['upload', 'chat', 'configure', 'review', 'examType', 'schedule'].indexOf(step) + 1} of 6
-                    </div>
+                <div className="p-4 border-t bg-gray-50 flex justify-between items-center">
+                    {(() => {
+                        const aiSteps: Step[] = ['modeSelection', 'upload', 'chat', 'configure', 'review', 'examType', 'schedule'];
+                        const manualSteps: Step[] = ['modeSelection', 'review', 'examType', 'schedule'];
+                        const activeStepsList = creationMode === 'manual' ? manualSteps : aiSteps;
+                        const currentIndex = activeStepsList.indexOf(step);
+
+                        return (
+                            <>
+                                <button
+                                    onClick={() => {
+                                        if (currentIndex > 0) {
+                                            setStep(activeStepsList[currentIndex - 1]);
+                                        }
+                                    }}
+                                    disabled={currentIndex <= 0}
+                                    className="px-4 py-2 text-sm font-semibold text-gray-700 hover:text-gray-900 border rounded-xl hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                                >
+                                    ← Back
+                                </button>
+                                <div className="text-sm font-medium text-gray-500">
+                                    Step {currentIndex + 1} of {activeStepsList.length}
+                                </div>
+                            </>
+                        );
+                    })()}
                 </div>
             </div>
         </div>

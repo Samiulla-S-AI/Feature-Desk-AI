@@ -17,6 +17,8 @@ import { analyzePDF } from '../../lib/pdfProcessor';
 import { useAuth } from '../../contexts/AuthContext';
 import { cloudinaryService } from '../../lib/cloudinaryService';
 import { firestoreService } from '../../lib/firebaseService';
+import { db } from '../../lib/firebase';
+import { doc, updateDoc } from 'firebase/firestore';
 import { sendNotification } from '../../lib/notificationService';
 import { getStudentsByClass } from '../../lib/teacherDb';
 import { renderMarkdown } from '../../utils/markdown';
@@ -273,8 +275,6 @@ export default function StudyMaterialsManager({ classId, subjects }: StudyMateri
             }
 
             // 3. Update note in Firestore
-            const { doc, updateDoc } = await import('firebase/firestore');
-            const { db } = await import('../../lib/firebase');
             const noteRef = doc(db, 'school_notes', material.id);
             await updateDoc(noteRef, {
                 aiSummary,

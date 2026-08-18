@@ -28,6 +28,7 @@ import {
 import { getClassAnalytics } from '../../lib/teacherDb';
 import { detectMistakePatterns, forecastClassReadiness, generateLearningVelocityNarrative } from '../../lib/teacherAI';
 import { generateWeeklyNarrative } from '../../lib/gemini';
+import { supabase } from '../../lib/supabase';
 
 interface AnalyticsDashboardProps {
     classId: number;
@@ -85,8 +86,6 @@ export default function AnalyticsDashboard({ classId }: AnalyticsDashboardProps)
 
         try {
             // Fetch real class results from Supabase
-            const { supabase } = await import('../../lib/supabase');
-
             // 1. Get actual quiz results for mistake pattern analysis
             const { data: quizResults } = await supabase
                 .from('quiz_results')
@@ -186,7 +185,6 @@ export default function AnalyticsDashboard({ classId }: AnalyticsDashboardProps)
     const generateStudentNarratives = async () => {
         setLoadingNarratives(true);
         try {
-            const { supabase } = await import('../../lib/supabase');
             const { data: students } = await supabase
                 .from('students')
                 .select('id, student_name')

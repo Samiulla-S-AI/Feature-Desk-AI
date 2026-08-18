@@ -39,6 +39,8 @@ interface Question {
   correctAnswer?: string | string[];
   correct?: number;
   marks: number;
+  imageUrl?: string;
+  image_url?: string;
 }
 
 // Exam/Test interface
@@ -78,8 +80,8 @@ export default function TestApp() {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [testSubmitted, setTestSubmitted] = useState(false);
-  const [_showWarning, setShowWarning] = useState(false);
-  const [_warningCount, setWarningCount] = useState(0);
+  const [_showWarning, _setShowWarning] = useState(false);
+  const [_warningCount, _setWarningCount] = useState(0);
   const [_selectedTest, setSelectedTest] = useState<Assessment | null>(null);
 
   // Proctoring state (Optional for tests, but kept for consistency)
@@ -145,7 +147,8 @@ export default function TestApp() {
             q.type === 'long_answer' ? 'essay' : 'short-answer', // Default fallback
         options: q.options,
         correct: q.correct,
-        marks: q.marks
+        marks: q.marks,
+        imageUrl: q.imageUrl || (q as any).image_url
       })),
       scheduled_at: assessment.scheduled_at,
       status: 'active',
@@ -479,6 +482,16 @@ export default function TestApp() {
 
         <div className="mb-6">
           <p className="whitespace-pre-wrap text-lg text-gray-800">{questionText}</p>
+          {(question.imageUrl || (question as any).image_url) && (
+            <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-2xl flex flex-col items-center justify-center max-w-lg mx-auto">
+              <img
+                src={question.imageUrl || (question as any).image_url}
+                alt={`Question ${currentQuestionIndex + 1} Visual`}
+                className="max-h-80 w-auto object-contain rounded-xl shadow-sm"
+              />
+              <span className="text-[11px] text-gray-500 font-medium mt-2">Question Reference Image</span>
+            </div>
+          )}
         </div>
 
         <div className="mb-4">

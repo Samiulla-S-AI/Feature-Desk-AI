@@ -1,4 +1,4 @@
-import { callWithFallback, CHATBOT_FORMATTING_PROMPT } from './gemini';
+import { callWithFallback, generateSmartContent, CHATBOT_FORMATTING_PROMPT } from './gemini';
 
 /**
  * PDF Processor using Gemini 2.5 Flash Lite
@@ -40,7 +40,7 @@ export const chatWithPDF = async (
         }));
 
         // Start chat with PDF context
-        const text = await callWithFallback(async (model) => {
+        const text = await callWithFallback(async (model, previousOutput) => {
             const chat = model.startChat({
                 history: [
                     {
@@ -64,8 +64,7 @@ export const chatWithPDF = async (
                 ]
             });
 
-            // Send the user's message with question generation instructions and formatting
-            const prompt = `${message}
+            let finalPrompt = `${message}
 
 ${CHATBOT_FORMATTING_PROMPT}
 
@@ -92,9 +91,18 @@ For different question types:
 - short_answer: Include expectedAnswer field
 - long_answer: Include rubric array with grading criteria`;
 
-            const result = await chat.sendMessage(prompt);
+            if (previousOutput) {
+                finalPrompt += `\n\n--- PREVIOUS INCOMPLETE OUTPUT ---\nYou previously started answering this but failed halfway. Here is what was generated so far:\n${previousOutput}\n\nPlease COMPLETE the response or provide a FULL valid response incorporating this.`;
+            }
+
+            const result = await chat.sendMessage(finalPrompt);
             const response = await result.response;
             return response.text();
+        }, 'gemini-2.5-flash', (resultText) => {
+            // Assuming successful generation, we can validate JSON if we wanted, 
+            // but since it's a general chat, text is fine.
+            if (!resultText || resultText.trim() === '') return { success: false, partialOutput: resultText };
+            return { success: true };
         });
 
         // Try to extract questions if present in the response
@@ -134,8 +142,7 @@ export const analyzePDF = async (
             questions: 'Generate 10 quiz questions based on this PDF document. Include a mix of easy, medium, and hard questions.'
         };
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 {
                     inlineData: {
                         mimeType: 'application/pdf',
@@ -143,9 +150,7 @@ export const analyzePDF = async (
                     }
                 },
                 prompts[analysisType]
-            ]);
-            return result.response.text();
-        });
+            ], { requireJson: analysisType === 'questions' });
         return { success: true, result: text };
     } catch (error) {
         console.error('Error analyzing PDF:', error);
@@ -221,8 +226,7 @@ Example addition to question object:
 
 Make sure questions are relevant to the document content and vary in difficulty.`;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 {
                     inlineData: {
                         mimeType: 'application/pdf',
@@ -230,9 +234,7 @@ Make sure questions are relevant to the document content and vary in difficulty.
                     }
                 },
                 prompt
-            ]);
-            return result.response.text();
-        });
+            ], { requireJson: true });
         const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
 
         if (jsonMatch) {
@@ -257,8 +259,7 @@ export const extractTextFromPDF = async (
         const base64 = await fileToBase64(pdfFile);
 
         // Use Gemini to extract text from PDF
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 {
                     inlineData: {
                         mimeType: 'application/pdf',
@@ -266,9 +267,7 @@ export const extractTextFromPDF = async (
                     }
                 },
                 'Extract and return all the text content from this PDF document. Maintain the structure and formatting. Return only the extracted text.'
-            ]);
-            return result.response.text();
-        });
+            ], { requireJson: false });
         return {
             text,
             success: true,
@@ -285,8 +284,7 @@ export const extractTextFromBase64PDF = async (
     pdfBase64: string
 ): Promise<{ text: string; success: boolean; pageCount: number; error?: string }> => {
     try {
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 {
                     inlineData: {
                         mimeType: 'application/pdf',
@@ -294,9 +292,7 @@ export const extractTextFromBase64PDF = async (
                     }
                 },
                 'Extract and return all the text content from this PDF document. Maintain the structure and formatting. Return only the extracted text.'
-            ]);
-            return result.response.text();
-        });
+            ], { requireJson: false });
         return {
             text,
             success: true,

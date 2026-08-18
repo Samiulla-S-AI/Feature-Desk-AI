@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { getStudentsByClass, getStudentsBySubject, resetStudentPassword, getStudentsNeedingIntervention, sendNotification, StudentProfile } from '../../lib/teacherDb';
 import { generateInterventionMessage, generateParentReport } from '../../lib/teacherAI';
+import { supabase } from '../../lib/supabase';
 
 interface StudentManagementProps {
     classId?: number;
@@ -111,7 +112,6 @@ export default function StudentManagement({ classId, subjectCode }: StudentManag
         setShowInterventionModal(true);
 
         // Fetch real student scores from database
-        const { supabase } = await import('../../lib/supabase');
         const { data: recentResults } = await supabase
             .from('quiz_results')
             .select('score, total_marks')
@@ -143,7 +143,6 @@ export default function StudentManagement({ classId, subjectCode }: StudentManag
         setReportCopied(false);
 
         try {
-            const { supabase } = await import('../../lib/supabase');
             const { data: recentResults } = await supabase
                 .from('quiz_results')
                 .select('score, total_marks, quiz_title')

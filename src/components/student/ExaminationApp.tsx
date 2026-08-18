@@ -29,8 +29,9 @@ import {
   saveExamForOffline
 } from '../../lib/proctoringService';
 import { getStudentExams, getAssessmentQuestions, generateExamPassword, Assessment, QuizQuestion } from '../../lib/teacherDb';
-import { saveExamSubmissionHybrid } from '../../lib/db';
 import { gemini20Flash } from '../../lib/gemini';
+import { offlineSyncEngine } from '../../lib/offlineSyncEngine';
+import SyncStatusIndicator from '../common/SyncStatusIndicator';
 import ExamAnswerInput from './ExamAnswerInput';
 
 // Question interface
@@ -43,6 +44,8 @@ interface Question {
   correctAnswer?: string | string[];
   correct?: number;
   marks: number;
+  imageUrl?: string;
+  image_url?: string;
 }
 
 // Exam interface
@@ -98,9 +101,9 @@ export default function ExaminationApp() {
   const [examSubmitted, setExamSubmitted] = useState(false);
   const [showAnswerReview, setShowAnswerReview] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
-  const [warningCount, setWarningCount] = useState(0);
+  const [_warningCount, setWarningCount] = useState(0);
   const [isLocked, setIsLocked] = useState(true);
-  const [examPassword, setExamPassword] = useState('');
+  const [_examPassword, setExamPassword] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -141,12 +144,18 @@ export default function ExaminationApp() {
     }
   };
 
-  // Auto-save progress to prevent data loss
+  // Auto-save progress continuously to offline cache engine
   useEffect(() => {
     if (currentExam?.id && answers) {
-      localStorage.setItem(`exam_answers_${currentExam.id}`, JSON.stringify(answers));
+      offlineSyncEngine.saveExamDraft(
+        currentExam.id,
+        (user as any)?.id || 'guest',
+        answers,
+        answerModes,
+        remainingTime
+      );
     }
-  }, [answers, currentExam]);
+  }, [answers, answerModes, currentExam, remainingTime, user]);
 
   // Start an exam
   const startExam = async (assessment: Assessment) => {
@@ -208,30 +217,21 @@ export default function ExaminationApp() {
       initialAnswers[String(q.id)] = null;
     });
 
-    // Restore saved progress
-    const saved = localStorage.getItem(`exam_answers_${assessment.id}`);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        
-        // Handle visibility-change backup format: { answers: {...}, modes: {...}, timestamp: ... }
-        let savedAnswers = parsed;
-        if (parsed.answers && typeof parsed.answers === 'object' && !Array.isArray(parsed.answers)) {
-          savedAnswers = parsed.answers;
-          if (parsed.modes) setAnswerModes(parsed.modes);
+    // Restore saved progress from Offline Cache Engine (with local fallback)
+    const cachedDraft = await offlineSyncEngine.getExamDraft(assessment.id);
+    if (cachedDraft && cachedDraft.answers) {
+      const validAnswers = { ...initialAnswers };
+      Object.keys(cachedDraft.answers).forEach(key => {
+        if (key in initialAnswers && cachedDraft.answers[key] !== null && cachedDraft.answers[key] !== undefined) {
+          validAnswers[key] = cachedDraft.answers[key];
         }
-        
-        // Merge only valid keys
-        const validAnswers = { ...initialAnswers };
-        Object.keys(savedAnswers).forEach(key => {
-            if (key in initialAnswers) {
-                validAnswers[key] = savedAnswers[key];
-            }
-        });
-        setAnswers(validAnswers);
-      } catch (e) {
-        setAnswers(initialAnswers);
+      });
+      setAnswers(validAnswers);
+      if (cachedDraft.answerModes) setAnswerModes(cachedDraft.answerModes);
+      if (cachedDraft.timeRemaining && cachedDraft.timeRemaining > 0) {
+        setRemainingTime(cachedDraft.timeRemaining);
       }
+      console.log('📋 Restored exam draft from high-capacity offline cache');
     } else {
       setAnswers(initialAnswers);
     }
@@ -425,11 +425,10 @@ export default function ExaminationApp() {
         aiAnalysis: gradingReport
       };
 
-      // Save answers to database — MUST await to ensure answers are saved
+      // Save answers via offlineSyncEngine (handles both instant cloud submit and safe offline queueing)
       if ((user as any)?.id) {
         try {
-          // const { saveExamSubmissionHybrid } = await import('../../lib/db');
-          const result = await saveExamSubmissionHybrid(
+          const result = await offlineSyncEngine.submitExamSafe(
             (user as any).id,
             currentExam?.id || 'exam_001',
             gradeData,
@@ -438,10 +437,13 @@ export default function ExaminationApp() {
           );
 
           if (result.success) {
-            console.log('✅ Exam submitted successfully');
+            if (result.isOfflineQueued) {
+              console.log('📦 Exam submitted safely to Local Cache! Will auto-sync to cloud when online.');
+            } else {
+              console.log('✅ Exam submitted successfully to cloud:', result.submissionId);
+            }
           } else {
-            console.error('❌ Exam submission failed:', result.error);
-            // Don't alert here to avoid blocking UI, just log
+            console.error('❌ Exam submission issue:', result);
           }
         } catch (saveError) {
           console.error('❌ Critical submission error:', saveError);
@@ -647,7 +649,17 @@ export default function ExaminationApp() {
         </div>
 
         <div className="mb-6">
-          <p className="whitespace-pre-wrap">{questionText}</p>
+          <p className="whitespace-pre-wrap text-base font-medium text-gray-900">{questionText}</p>
+          {(question.imageUrl || (question as any).image_url) && (
+            <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-2xl flex flex-col items-center justify-center max-w-lg mx-auto">
+              <img
+                src={question.imageUrl || (question as any).image_url}
+                alt={`Question ${currentQuestionIndex + 1} Visual`}
+                className="max-h-80 w-auto object-contain rounded-xl shadow-sm"
+              />
+              <span className="text-[11px] text-gray-500 font-medium mt-2">Question Diagram / Reference Image</span>
+            </div>
+          )}
         </div>
 
         <div className="mb-4">
@@ -755,17 +767,20 @@ export default function ExaminationApp() {
   if (view === 'list') {
     return (
       <div className="max-w-4xl mx-auto p-6">
-        <div className="flex items-center mb-6">
-          <button
-            onClick={() => navigate('/')}
-            className="mr-4 p-2 rounded-full hover:bg-gray-100"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-bold">Examination Center</h1>
-            <p className="text-gray-600">Password protected formal examinations</p>
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center">
+            <button
+              onClick={() => navigate('/')}
+              className="mr-4 p-2 rounded-full hover:bg-gray-100"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-bold">Examination Center</h1>
+              <p className="text-gray-600">Password protected formal examinations</p>
+            </div>
           </div>
+          <SyncStatusIndicator />
         </div>
 
         {loadingExams ? (
@@ -1231,6 +1246,8 @@ export default function ExaminationApp() {
               <Clock className="w-4 h-4" />
               <span className="font-medium">{formatTime(remainingTime)}</span>
             </div>
+
+            <SyncStatusIndicator />
 
             <button
               onClick={toggleFullScreen}

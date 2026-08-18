@@ -1,10 +1,11 @@
-import { callWithFallback } from './gemini';
+import { callWithFallback, generateSmartContent } from './gemini';
 import {
     saveTeachingMaterial,
     saveGeneratedQuestions,
     saveLearningMethod,
     GeneratedQuestion
 } from './questionDb';
+import { extractTextFromBase64PDF } from './pdfProcessor';
 
 // ===================================================================
 // Content-Based AI Question & Learning Generation
@@ -195,11 +196,7 @@ FORMAT (Return ONLY valid JSON, no other text):
 }
 `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         // Parse JSON from response
         const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -274,11 +271,7 @@ FORMAT (Return ONLY valid JSON):
 }
 `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -296,7 +289,7 @@ FORMAT (Return ONLY valid JSON):
  * Generate adaptive quiz from existing question bank
  * This function is called by the Quiz App
  */
-export const generateAdaptiveQuizFromMaterials = async (
+export const generateAdaptiveQuizFromContent = async (
     classId: number,
     subject: string,
     studentPerformance?: {
@@ -368,7 +361,6 @@ export const extractTextFromPDF = async (
 ): Promise<{ text: string; success: boolean }> => {
     try {
         // Use the dedicated PDF processor for proper text extraction
-        const { extractTextFromBase64PDF } = await import('./pdfProcessor');
         const result = await extractTextFromBase64PDF(pdfBase64);
 
         if (result.success) {
@@ -385,8 +377,7 @@ Include headings, paragraphs, bullet points, and any important text.
 Return ONLY the extracted text, no additional commentary.
 `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent([
+        const text = await generateSmartContent([
                 prompt,
                 {
                     inlineData: {
@@ -394,10 +385,7 @@ Return ONLY the extracted text, no additional commentary.
                         mimeType: 'application/pdf'
                     }
                 }
-            ]);
-            const response = await result.response;
-            return response.text();
-        });
+            ], { requireJson: false });
         return { text, success: true };
     } catch (error) {
         console.error('Error extracting text from PDF:', error);
@@ -455,11 +443,7 @@ Return JSON:
 }
 `;
 
-        const text = await callWithFallback(async (model) => {
-            const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
-        });
+        const text = await generateSmartContent(prompt, { requireJson: true });
 
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (jsonMatch) {

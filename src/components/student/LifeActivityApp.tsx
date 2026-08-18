@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Heart, RefreshCw, Brain } from 'lucide-react';
 import { gemini20Flash } from '../../lib/gemini';
 import { useAuth } from '../../contexts/AuthContext';
+import { db } from '../../lib/firebase';
+import { collection, addDoc } from 'firebase/firestore';
 
 interface Choice {
     id: string;
@@ -122,18 +124,14 @@ export default function LifeActivityApp() {
                                             onClick={() => {
                                                 setSelectedChoice(choice);
                                                 if (user) {
-                                                    import('firebase/firestore').then(({ collection, addDoc }) => {
-                                                        import('../../lib/firebase').then(({ db }) => {
-                                                            addDoc(collection(db, 'life_activity_logs'), {
-                                                                student_id: (user as any).id,
-                                                                scenario_title: scenario.title,
-                                                                choice_id: choice.id,
-                                                                choice_type: choice.type,
-                                                                outcome: choice.outcome,
-                                                                timestamp: new Date()
-                                                            }).catch(err => console.error('Error logging activity:', err));
-                                                        });
-                                                    });
+                                                    addDoc(collection(db, 'life_activity_logs'), {
+                                                        student_id: (user as any).id,
+                                                        scenario_title: scenario.title,
+                                                        choice_id: choice.id,
+                                                        choice_type: choice.type,
+                                                        outcome: choice.outcome,
+                                                        timestamp: new Date()
+                                                    }).catch(err => console.error('Error logging activity:', err));
                                                 }
                                             }}
                                             disabled={!!selectedChoice}

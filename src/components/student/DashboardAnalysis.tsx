@@ -14,6 +14,7 @@ import {
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { analyzeStudentPerformance } from '../../lib/gemini';
 import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../lib/supabase';
 
 const performanceData = [
   { month: 'Jan', score: 75, avgTime: 45 },
@@ -61,14 +62,12 @@ export default function DashboardAnalysis() {
     setAnalyzing(true);
     try {
       // 1. Fetch Real Data from Supabase (Structured Results)
-      const { data: recentActivity, error } = await import('../../lib/supabase').then(async ({ supabase }) => {
-        return await supabase
-          .from('quiz_results')
-          .select('quiz_title, score, total_marks, created_at')
-          .eq('student_id', (user as any)?.id)
-          .order('created_at', { ascending: false })
-          .limit(5);
-      });
+      const { data: recentActivity, error } = await supabase
+        .from('quiz_results')
+        .select('quiz_title, score, total_marks, created_at')
+        .eq('student_id', (user as any)?.id)
+        .order('created_at', { ascending: false })
+        .limit(5);
 
       if (error) throw error;
 

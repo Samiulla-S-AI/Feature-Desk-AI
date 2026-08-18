@@ -117,16 +117,45 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className 
             return result;
         };
 
-        // Inline Math ($...$)
+        // Inline & Block Math renderer supporting \(...\), \[...\], $...$, and $$...$$
         const renderInlineWithMath = (text: string): JSX.Element => {
-            // Split by $...$ to handle inline math
-            const parts = text.split(/(\$[^$]+\$)/g);
+            // Split by math delimiters: \(...\), \[...\], $$...$$, $...$
+            const parts = text.split(/(\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)/g);
             return (
                 <>
                     {parts.map((part, index) => {
-                        if (part.startsWith('$') && part.endsWith('$')) {
-                            const math = part.slice(1, -1);
-                            return <span key={index} className="font-mono text-cyan-700 mx-1 bg-gray-50 px-1 rounded">{math}</span>;
+                        if (!part) return null;
+
+                        let mathContent = '';
+                        let isBlockMath = false;
+
+                        if (part.startsWith('\\(') && part.endsWith('\\)')) {
+                            mathContent = part.slice(2, -2).trim();
+                        } else if (part.startsWith('\\[') && part.endsWith('\\]')) {
+                            mathContent = part.slice(2, -2).trim();
+                            isBlockMath = true;
+                        } else if (part.startsWith('$$') && part.endsWith('$$')) {
+                            mathContent = part.slice(2, -2).trim();
+                            isBlockMath = true;
+                        } else if (part.startsWith('$') && part.endsWith('$')) {
+                            mathContent = part.slice(1, -1).trim();
+                        }
+
+                        if (mathContent) {
+                            if (isBlockMath) {
+                                return (
+                                    <div key={index} className="my-2 p-2 bg-gradient-to-r from-blue-50/80 to-purple-50/80 border border-blue-200/60 rounded-xl text-center font-mono text-sm font-semibold text-blue-900 shadow-2xs">
+                                        <span className="text-xs font-bold text-purple-600 mr-2">📐 MATH</span>
+                                        {mathContent}
+                                    </div>
+                                );
+                            }
+                            return (
+                                <span key={index} className="inline-flex items-center font-mono text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-1.5 py-0.5 rounded-md mx-0.5">
+                                    <span className="text-[10px] text-purple-500 mr-1 font-bold">fx</span>
+                                    {mathContent}
+                                </span>
+                            );
                         }
                         return <React.Fragment key={index}>{renderInlineMarkdown(part)}</React.Fragment>;
                     })}

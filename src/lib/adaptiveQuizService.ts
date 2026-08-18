@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { sendNotification, getSubjectName } from './notificationService';
-
+import { generateReinforcementQuizFromMistakes, MistakeCorrectionItem } from './gemini';
 
 export interface AdaptiveQuizRecommendation {
     id: string;
@@ -16,6 +16,14 @@ export interface AdaptiveQuizRecommendation {
     created_at: string;
 }
 
+export interface StudentCorrectionSummary {
+    hasCorrections: boolean;
+    totalMistakes: number;
+    weakConcepts: string[];
+    sourceExams: string[];
+    corrections: MistakeCorrectionItem[];
+}
+
 const LOCAL_KEY = 'fd_student_adaptive_quizzes';
 
 /**
@@ -26,7 +34,7 @@ const getLocalRecommendations = (studentId: string): AdaptiveQuizRecommendation[
         const stored = localStorage.getItem(LOCAL_KEY);
         if (!stored) return [];
         const all: AdaptiveQuizRecommendation[] = JSON.parse(stored);
-        return all.filter(r => r.student_id === studentId);
+        return all.filter(r => r.student_id === studentId || studentId === 'guest' || r.student_id === 'guest');
     } catch {
         return [];
     }
@@ -198,4 +206,191 @@ export const completeAdaptiveQuizRecommendation = async (
     } catch (e) {
         return false;
     }
+};
+
+/**
+ * 🎯 CORE FEEDBACK EXTRACTOR:
+ * Fetches all evaluated mistake corrections and teacher/AI feedback for a student.
+ */
+export const fetchStudentCorrectionFeedback = async (
+    studentId: string,
+    subjectCode?: string
+): Promise<StudentCorrectionSummary> => {
+    const corrections: MistakeCorrectionItem[] = [];
+    const weakConceptsSet = new Set<string>();
+    const sourceExamsSet = new Set<string>();
+
+    try {
+        // 1. Fetch from student_adaptive_quizzes recommendations
+        const recs = await getAdaptiveQuizRecommendations(studentId);
+        const filteredRecs = subjectCode && subjectCode !== 'ALL'
+            ? recs.filter(r => r.subject_code === subjectCode)
+            : recs;
+
+        filteredRecs.forEach(r => {
+            if (r.exam_title) sourceExamsSet.add(r.exam_title);
+            if (Array.isArray(r.weak_concepts)) {
+                r.weak_concepts.forEach(wc => {
+                    weakConceptsSet.add(wc);
+                    corrections.push({
+                        concept: wc,
+                        questionText: `Evaluated problem from "${r.exam_title}"`,
+                        studentAnswer: `Misconception identified in ${wc}`,
+                        correctAnswer: `Accurate rule & application for ${wc}`,
+                        feedback: `Reinforcement recommended by teacher evaluation on ${r.exam_title}.`,
+                        sourceExam: r.exam_title
+                    });
+                });
+            }
+        });
+
+        // 2. Fetch from exam_submissions with evaluation details
+        try {
+            const { data: submissions } = await supabase
+                .from('exam_submissions')
+                .select('*')
+                .eq('student_id', studentId)
+                .order('created_at', { ascending: false })
+                .limit(10);
+
+            if (submissions && submissions.length > 0) {
+                submissions.forEach(sub => {
+                    const title = sub.assessment_title || sub.title || 'Exam Evaluation';
+                    sourceExamsSet.add(title);
+
+                    // Check if gradingReport or aiAnalysis exists in answer_sheet_url / submission data
+                    if (sub.answer_sheet_url) {
+                        try {
+                            const parsed = typeof sub.answer_sheet_url === 'string' && sub.answer_sheet_url.startsWith('{')
+                                ? JSON.parse(sub.answer_sheet_url)
+                                : sub.answer_sheet_url;
+
+                            if (parsed.aiAnalysis) {
+                                // Extract weak concepts or feedback lines
+                                const analysisText = typeof parsed.aiAnalysis === 'string'
+                                    ? parsed.aiAnalysis
+                                    : JSON.stringify(parsed.aiAnalysis);
+
+                                corrections.push({
+                                    concept: `${sub.subject_code || 'Subject'} Exam Feedback`,
+                                    questionText: `Mistakes evaluated in ${title}`,
+                                    studentAnswer: 'Previous incorrect reasoning',
+                                    correctAnswer: 'Standard correct methodology',
+                                    feedback: analysisText.substring(0, 300),
+                                    sourceExam: title
+                                });
+                            }
+                        } catch { /* ignore parse error */ }
+                    }
+                });
+            }
+        } catch (subErr) {
+            console.warn('Could not fetch exam submissions for feedback:', subErr);
+        }
+
+        // 3. Fetch from recent quiz_results
+        try {
+            const { data: quizResults } = await supabase
+                .from('quiz_results')
+                .select('*')
+                .eq('student_id', studentId)
+                .order('created_at', { ascending: false })
+                .limit(10);
+
+            if (quizResults && quizResults.length > 0) {
+                quizResults.forEach(qr => {
+                    if (qr.score < qr.total_marks && qr.detailed_logs) {
+                        const logs = typeof qr.detailed_logs === 'string' ? JSON.parse(qr.detailed_logs) : qr.detailed_logs;
+                        if (logs.answers) {
+                            Object.entries(logs.answers).forEach(([qId, ansData]: [string, any]) => {
+                                if (ansData && ansData.isCorrect === false) {
+                                    corrections.push({
+                                        concept: ansData.concept || qr.quiz_title || 'Quiz Concept',
+                                        questionText: ansData.question || `Question ${qId}`,
+                                        studentAnswer: ansData.studentAnswer || 'Incorrect Answer',
+                                        correctAnswer: ansData.correctAnswer || 'Correct Solution',
+                                        feedback: ansData.explanation || 'Review the correct principle.',
+                                        sourceExam: qr.quiz_title
+                                    });
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+        } catch { /* ignore */ }
+
+    } catch (e) {
+        console.error('Error fetching student correction feedback:', e);
+    }
+
+    const weakConcepts = Array.from(weakConceptsSet);
+    const sourceExams = Array.from(sourceExamsSet);
+
+    return {
+        hasCorrections: corrections.length > 0,
+        totalMistakes: corrections.length,
+        weakConcepts,
+        sourceExams,
+        corrections
+    };
+};
+
+/**
+ * 🎯 GENERATE ADAPTIVE REINFORCEMENT QUIZ ONLY FROM CORRECTED ANSWER FEEDBACK:
+ */
+export const generateAdaptiveQuizFromFeedback = async (
+    studentId: string,
+    subjectCode: string = 'MATH',
+    targetConcept?: string,
+    difficulty: string = 'medium'
+): Promise<{
+    quiz: any;
+    feedbackSummary: StudentCorrectionSummary;
+    fromRealFeedback: boolean;
+}> => {
+    const feedbackSummary = await fetchStudentCorrectionFeedback(studentId, subjectCode);
+    const subjectDisplayName = getSubjectName(subjectCode) || subjectCode;
+
+    // Filter corrections to target concept if specified
+    const targetCorrections = targetConcept
+        ? feedbackSummary.corrections.filter(c => c.concept?.toLowerCase().includes(targetConcept.toLowerCase()))
+        : feedbackSummary.corrections;
+
+    if (targetCorrections.length > 0) {
+        // Generate AI quiz strictly based on student corrections and feedback
+        const quiz = await generateReinforcementQuizFromMistakes(
+            subjectDisplayName,
+            difficulty,
+            targetCorrections,
+            targetConcept ? [targetConcept] : feedbackSummary.weakConcepts
+        );
+
+        return {
+            quiz,
+            feedbackSummary,
+            fromRealFeedback: true
+        };
+    }
+
+    // If no specific corrections exist for this student yet:
+    // Generate a foundational mastery challenge based on general curriculum topics
+    const quiz = await generateReinforcementQuizFromMistakes(
+        subjectDisplayName,
+        difficulty,
+        [{
+            concept: `${subjectDisplayName} Fundamentals`,
+            questionText: `Core principles of ${subjectDisplayName}`,
+            correctAnswer: 'Foundational standard rule',
+            feedback: 'Mastering the core principles ensures continued excellence!',
+            sourceExam: 'Curriculum Diagnostic'
+        }],
+        [`${subjectDisplayName} Core Mastery`]
+    );
+
+    return {
+        quiz,
+        feedbackSummary,
+        fromRealFeedback: false
+    };
 };

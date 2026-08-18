@@ -50,26 +50,41 @@ const getModelWithFallback = (modelName: string): GenerativeModel => {
 
 // Wrapper function to handle API calls with automatic key rotation
 export const callWithFallback = async <T>(
-  apiCall: (model: GenerativeModel) => Promise<T>,
-  modelName: string = 'gemini-2.5-flash'
+  apiCall: (model: GenerativeModel, previousOutput?: string) => Promise<T>,
+  modelName: string = 'gemini-2.5-flash',
+  validate?: (result: T) => { success: boolean; partialOutput?: string }
 ): Promise<T> => {
   let lastError: Error | null = null;
   const startKeyIndex = currentKeyIndex;
+  let previousOutput: string | undefined = undefined;
 
   // Try all available keys starting from current
   for (let attempt = 0; attempt < API_KEYS.length; attempt++) {
     try {
       const model = getModelWithFallback(modelName);
-      const result = await apiCall(model);
+      const result = await apiCall(model, previousOutput);
+      
+      // If a validator is provided, check if the output is successfully completing the task
+      if (validate) {
+         const validationResult = validate(result);
+         if (!validationResult.success) {
+            console.warn(`⚠️ API key #${currentKeyIndex + 1} generated incomplete output. Retrying with fallback memory.`);
+            previousOutput = validationResult.partialOutput;
+            // Force fallback by throwing a custom error to trigger rotation
+            throw new Error('INCOMPLETE_OUTPUT_ERROR');
+         }
+      }
+      
       return result;
     } catch (error: any) {
       lastError = error;
       console.warn(`❌ API key #${currentKeyIndex + 1} failed:`, error.message || error);
 
-      // Check if it's a rate limit or quota error
+      // Check if it's a rate limit, quota error, or our custom incomplete output error
       if (error.message?.includes('429') ||
         error.message?.includes('quota') ||
         error.message?.includes('rate') ||
+        error.message?.includes('INCOMPLETE_OUTPUT_ERROR') ||
         error.message?.includes('Resource has been exhausted')) {
 
         if (!rotateToNextKey()) {
@@ -88,6 +103,66 @@ export const callWithFallback = async <T>(
   }
 
   throw lastError || new Error('All API keys failed');
+};
+
+/**
+ * A powerful fallback generator that automatically attaches the previous incomplete 
+ * output to the prompt to continue generating if it failed halfway.
+ */
+export const generateSmartContent = async (
+    prompt: string | any[],
+    options?: {
+        modelName?: string;
+        requireJson?: boolean;
+    }
+): Promise<string> => {
+    return callWithFallback(async (model, previousOutput) => {
+        let finalPrompt = prompt;
+        
+        // If there is previous incomplete output, tell the model to continue from where it left off.
+        if (previousOutput) {
+            const memoryPrompt = `\n\n--- PREVIOUS INCOMPLETE OUTPUT ---\nYou previously started answering this but failed or stopped halfway. Here is what was generated so far:\n${previousOutput}\n\nPlease COMPLETE the response or provide a FULL valid response incorporating this.`;
+            
+            if (Array.isArray(finalPrompt)) {
+                finalPrompt = [...finalPrompt, memoryPrompt];
+            } else {
+                finalPrompt = finalPrompt + memoryPrompt;
+            }
+        }
+        
+        const result = await model.generateContent(finalPrompt);
+        const response = await result.response;
+        return response.text();
+    }, options?.modelName || 'gemini-2.5-flash', (resultText) => {
+        if (options?.requireJson) {
+            try {
+                // Attempt to find and parse JSON loosely
+                let cleaned = resultText.trim();
+                if (cleaned.startsWith('```json')) {
+                    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/\s*```$/, '');
+                } else if (cleaned.startsWith('```')) {
+                    cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+                }
+                const match = cleaned.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+                
+                if (match) {
+                   JSON.parse(match[0]); // If this parses, it's complete JSON
+                   return { success: true };
+                }
+                return { success: false, partialOutput: resultText };
+            } catch (e) {
+                // JSON parsing failed, meaning it's incomplete
+                return { success: false, partialOutput: resultText };
+            }
+        }
+        
+        // General check for non-JSON requests
+        if (!resultText || resultText.trim() === '') {
+            return { success: false, partialOutput: resultText };
+        }
+        
+        return { success: true };
+    });
 };
 
 // Initialize Gemini AI with first working key
@@ -202,8 +277,7 @@ export const convertHandwritingToText = async (imageData: string): Promise<strin
     Return only the converted text without any additional commentary.
     `;
 
-    const text = await callWithFallback(async (model) => {
-      const result = await model.generateContent([
+    const text = await generateSmartContent([
         prompt,
         {
           inlineData: {
@@ -211,10 +285,7 @@ export const convertHandwritingToText = async (imageData: string): Promise<strin
             mimeType: 'image/png'
           }
         }
-      ]);
-      const response = await result.response;
-      return response.text();
-    });
+      ], { requireJson: false });
     return text;
   } catch (error) {
     console.error('Error converting handwriting:', error);
@@ -293,11 +364,7 @@ export const generateAdaptiveQuiz = async (
     }
     `;
 
-    let text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    }, 'gemini-2.5-flash');
+    let text = await generateSmartContent(prompt, { requireJson: true, modelName: "gemini-2.5-flash" });
 
     // Remove markdown code blocks if present
     text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
@@ -370,6 +437,138 @@ export const generateAdaptiveQuiz = async (
   }
 };
 
+export interface MistakeCorrectionItem {
+  questionText?: string;
+  studentAnswer?: string;
+  correctAnswer?: string;
+  feedback?: string;
+  concept?: string;
+  sourceExam?: string;
+}
+
+/**
+ * Generates an adaptive quiz strictly based on the student's evaluated/corrected answers and feedback.
+ * Formatted with positive educational psychology to encourage growth and mastery.
+ */
+export const generateReinforcementQuizFromMistakes = async (
+  subject: string,
+  difficulty: string,
+  corrections: MistakeCorrectionItem[],
+  weakConcepts: string[] = []
+): Promise<any> => {
+  try {
+    const correctionsText = corrections.map((c, i) => `
+    Correction #${i + 1}:
+    - Concept / Topic: ${c.concept || 'General ' + subject}
+    - Original Question: "${c.questionText || 'Concept Question'}"
+    - Student's Mistake / Answer: "${c.studentAnswer || 'Incorrect response'}"
+    - Correct Principle: "${c.correctAnswer || 'Accurate principle'}"
+    - Teacher / AI Evaluation Feedback: "${c.feedback || 'Review this concept carefully.'}"
+    ${c.sourceExam ? `- Source Exam: "${c.sourceExam}"` : ''}
+    `).join('\n');
+
+    const prompt = `
+    You are an expert, encouraging, empathetic AI Tutor practicing positive educational psychology.
+    A student has recently taken an assessment and made specific mistakes. Your task is to generate a personalized Adaptive Reinforcement Quiz designed STRICTLY around their corrected mistakes and teacher feedback.
+
+    SUBJECT: ${subject}
+    DIFFICULTY LEVEL: ${difficulty}
+
+    STUDENT'S EVALUATED MISTAKES & FEEDBACK:
+    ${correctionsText}
+    ${weakConcepts.length > 0 ? `\nIDENTIFIED WEAK CONCEPTS: ${weakConcepts.join(', ')}` : ''}
+
+    CRITICAL PEDAGOGICAL INSTRUCTIONS:
+    1. TARGETED REINFORCEMENT: Every question must directly test and help the student overcome one of the misconceptions or mistakes listed above.
+    2. POSITIVE PSYCHOLOGY & ENCOURAGEMENT: 
+       - Formulate questions in an empowering, supportive way.
+       - Explanations MUST be constructive, celebratory, and clear, explaining step-by-step why the right answer works and gently highlighting the trap of the common misconception.
+    3. QUESTION COUNT:
+       - Generate between 3 and 10 questions (approximately 1 to 3 questions per mistake/weak concept).
+    4. MULTIPLE CHOICE FORMAT:
+       - Exactly 4 options (A, B, C, D)
+       - The correct option index (0 for A, 1 for B, 2 for C, 3 for D)
+       - "concept": The specific concept being reinforced (e.g. "Linear Equations")
+       - "positiveEncouragement": A 1-sentence supportive remark celebrating understanding (e.g. "Great job! Remembering to flip the sign is a superpower in algebra!").
+
+    IMPORTANT: Return ONLY valid JSON, no markdown backticks or commentary.
+
+    Use this exact JSON structure:
+    {
+      "title": "${subject} Targeted Mastery Quiz",
+      "reinforcedConcepts": ${JSON.stringify(weakConcepts.length > 0 ? weakConcepts : ['Corrected Mistakes'])},
+      "questions": [
+        {
+          "id": 1,
+          "question": "Clear, engaging question text here",
+          "options": ["A) First option", "B) Second option", "C) Third option", "D) Fourth option"],
+          "correct": 0,
+          "explanation": "Clear, encouraging explanation of the correct principle",
+          "positiveEncouragement": "Encouraging remark highlighting mastery",
+          "concept": "Concept name",
+          "difficulty": "${difficulty}",
+          "timeEstimate": 60
+        }
+      ],
+      "totalMarks": 25,
+      "timeLimit": 300
+    }
+    `;
+
+    let text = await generateSmartContent(prompt, { requireJson: true, modelName: "gemini-2.5-flash" });
+
+    text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      text = jsonMatch[0];
+    }
+
+    const quiz = JSON.parse(text);
+    if (!quiz.questions || quiz.questions.length === 0) {
+      throw new Error('Invalid reinforcement quiz structure');
+    }
+
+    // Ensure total marks and time limit are properly calculated
+    quiz.totalMarks = quiz.questions.length * 5;
+    quiz.timeLimit = quiz.questions.length * 60;
+
+    return quiz;
+  } catch (error) {
+    console.error('Error generating reinforcement quiz from mistakes:', error);
+
+    // Fallback: build targeted questions directly from the provided corrections
+    const fallbackQuestions = (corrections.length > 0 ? corrections : [{
+      concept: 'Key Principle',
+      questionText: `Fundamental ${subject} concept`,
+      correctAnswer: 'The validated foundational rule',
+      feedback: 'Keep practicing this core concept.'
+    }]).map((c, idx) => ({
+      id: idx + 1,
+      question: `Reinforce: Regarding "${c.concept || subject}", how should you correctly approach this concept?`,
+      options: [
+        `A) ${c.correctAnswer || 'Apply the verified standard concept principle'}`,
+        `B) ${c.studentAnswer ? `Rely on: ${c.studentAnswer}` : 'Use an incomplete formula'}`,
+        `C) Ignore the given constraints`,
+        `D) Skip checking intermediate steps`
+      ],
+      correct: 0,
+      explanation: c.feedback || `Remember: ${c.correctAnswer || 'Focusing on the core principle leads to the correct result.'}`,
+      positiveEncouragement: "Excellent effort! Reviewing your corrections builds deep mastery.",
+      concept: c.concept || 'Concept Review',
+      difficulty: difficulty,
+      timeEstimate: 60
+    }));
+
+    return {
+      title: `${subject} Reinforcement Quiz`,
+      reinforcedConcepts: weakConcepts.length > 0 ? weakConcepts : ['Corrected Answers'],
+      questions: fallbackQuestions,
+      totalMarks: fallbackQuestions.length * 5,
+      timeLimit: fallbackQuestions.length * 60
+    };
+  }
+};
+
 export const analyzeStudentPerformance = async (studentData: any): Promise<any> => {
   try {
     const prompt = `
@@ -386,11 +585,7 @@ export const analyzeStudentPerformance = async (studentData: any): Promise<any> 
     }
     `;
 
-    const text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    }, 'gemini-2.5-flash');
+    const text = await generateSmartContent(prompt, { requireJson: true, modelName: "gemini-2.5-flash" });
     return JSON.parse(text);
   } catch (error) {
     console.error('Error analyzing performance:', error);
@@ -438,11 +633,7 @@ export const generateSocraticHints = async (
     }
     `;
 
-    let text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    }, 'gemini-2.5-flash');
+    let text = await generateSmartContent(prompt, { requireJson: true, modelName: "gemini-2.5-flash" });
     text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -487,11 +678,7 @@ export const generateConceptExplanation = async (
     Be encouraging but educational. Return ONLY the explanation text.
     `;
   
-    const text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    }, 'gemini-2.5-flash');
+    const text = await generateSmartContent(prompt, { requireJson: false, modelName: "gemini-2.5-flash" });
     return text.trim();
   } catch (error) {
     console.error('Error generating explanation:', error);
@@ -546,11 +733,7 @@ export const generateReinforcementQuiz = async (
     }
     `;
 
-    let text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    }, 'gemini-2.5-flash');
+    let text = await generateSmartContent(prompt, { requireJson: true, modelName: "gemini-2.5-flash" });
     text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -591,11 +774,7 @@ export const analyzeConfidencePatterns = async (
     }
     `;
 
-    const text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    });
+    const text = await generateSmartContent(prompt, { requireJson: true });
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -629,11 +808,7 @@ export const generateWeeklyNarrative = async (
     Return ONLY the narrative text, no JSON.
     `;
 
-    const text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    });
+    const text = await generateSmartContent(prompt, { requireJson: false });
     return text.trim();
   } catch (error) {
     console.error('Error generating narrative:', error);
@@ -674,11 +849,7 @@ export const generateStudentQuizFeedback = async (
     Keep the tone friendly, positive, and motivating. Return ONLY the feedback text. Do NOT include markdown code blocks, JSON, or greeting placeholders.
     `;
 
-    const text = await callWithFallback(async (model) => {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text();
-    }, 'gemini-2.5-flash');
+    const text = await generateSmartContent(prompt, { requireJson: false, modelName: "gemini-2.5-flash" });
 
     return text.trim();
   } catch (error) {
